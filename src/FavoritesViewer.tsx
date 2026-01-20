@@ -1,32 +1,75 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from "react";
 import { Search, Upload, Play, Pause, ChevronLeft, ChevronRight, X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings } from 'lucide-react';
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import Masonry from "react-masonry-css";
 
+type AppConfig = { library_root?: string | null };
+
+type ImportResult = {
+  imported: number;
+  skipped: number;
+  missing_files: number;
+  errors: string[];
+};
+
+type ItemDto = {
+  item_id: number;
+  source: string;
+  source_id: string;
+  remote_url?: string | null;
+  file_abs: string;
+  ext?: string | null;
+  tags: string[];
+  artists: string[];
+  sources: string[];
+  rating?: string | null;
+  fav_count?: number | null;
+  score_total?: number | null;
+  timestamp?: string | null;
+  added_at: string;
+};
+
+type LibraryItem = {
+  id?: number;
+  item_id: number;
+  source: string;
+  source_id: string;
+  remote_url?: string | null;
+  url: string;              // convertFileSrc result
+  ext?: string | null;
+  tags: string[];
+  artist: string[];
+  sources: string[];
+  rating?: string | null;
+  fav_count?: number | null;
+  score?: { total: number };
+  timestamp?: string | null;
+};
+
+type Feed = { id: number; name: string; query: string };
+type FeedPagingState = { beforeId: number | null; done: boolean };
 
 export default function FavoritesViewer() {
   const [activeTab, setActiveTab] = useState('viewer');
-  const [items, setItems] = useState([]);
-  const [filteredItems, setFilteredItems] = useState([]);
+  const [items, setItems] = useState<LibraryItem[]>([]);
+  const [filteredItems, setFilteredItems] = useState<LibraryItem[]>([]);
   const [searchTags, setSearchTags] = useState('');
   const [sortOrder, setSortOrder] = useState('default');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isSlideshow, setIsSlideshow] = useState(false);
   const [slideshowSpeed, setSlideshowSpeed] = useState(3000);
-  const [selectedTags, setSelectedTags] = useState([]);
-  const [allTags, setAllTags] = useState([]);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [allTags, setAllTags] = useState<string[]>([]);
   const [fadeIn, setFadeIn] = useState(true);
   const [imageLoading, setImageLoading] = useState(true);
-  const [preloadedImages, setPreloadedImages] = useState({});
-  const [imageCache, setImageCache] = useState({});
+  const [imageCache, setImageCache] = useState<Record<string, boolean>>({});
   const [renameOnImport, setRenameOnImport] = useState(false);
   
   // Feed state
-  const [feeds, setFeeds] = useState([]);
-  const [feedPosts, setFeedPosts] = useState({});
-  const [loadingFeeds, setLoadingFeeds] = useState({});
+  const [feeds, setFeeds] = useState<Feed[]>([]);
+  const [feedPosts, setFeedPosts] = useState<Record<number, any[]>>({});
+  const [loadingFeeds, setLoadingFeeds] = useState<Record<number, boolean>>({});
   const [newFeedQuery, setNewFeedQuery] = useState('');
   const [newFeedName, setNewFeedName] = useState('');
   const [apiUsername, setApiUsername] = useState('');
@@ -35,7 +78,7 @@ export default function FavoritesViewer() {
   // New
   const [showSettings, setShowSettings] = useState(false);
   const [libraryRoot, setLibraryRoot] = useState("");
-  const [feedPaging, setFeedPaging] = useState({}); 
+  const [feedPaging, setFeedPaging] = useState<Record<number, FeedPagingState>>({}); 
   const feedBreakpoints = {
     default: 3,
     1024: 3,
@@ -43,10 +86,16 @@ export default function FavoritesViewer() {
     520: 1,
   };
 
-  function InfiniteSentinel({ onVisible, disabled }) {
-    const ref = React.useRef(null);
+  function InfiniteSentinel({
+    onVisible,
+    disabled,
+  }: {
+    onVisible: () => void;
+    disabled?: boolean;
+  }) {
+    const ref = useRef<HTMLDivElement | null>(null);
 
-    React.useEffect(() => {
+    useEffect(() => {
       if (disabled) return;
       const el = ref.current;
       if (!el) return;
@@ -74,10 +123,10 @@ export default function FavoritesViewer() {
     });
     if (!file || Array.isArray(file)) return;
 
-    const res = await invoke("import_json", {
-      jsonPath: file,
-      renameFiles: renameOnImport,
-    });
+  const res = await invoke<ImportResult>("import_json", {
+    jsonPath: file,
+    renameFiles: renameOnImport,
+  });
 
     alert(
       `Imported: ${res.imported}\nSkipped: ${res.skipped}\nMissing files: ${res.missing_files}`
@@ -87,7 +136,7 @@ export default function FavoritesViewer() {
   };
 
     const refreshLibraryRoot = async () => {
-    const cfg = await invoke("get_config");
+    const cfg = await invoke<AppConfig>("get_config");
     setLibraryRoot(cfg.library_root || "");
   };
 
@@ -113,13 +162,15 @@ export default function FavoritesViewer() {
   }, [searchTags, items, selectedTags, sortOrder]);
 
   useEffect(() => {
-    let interval;
+    let interval: ReturnType<typeof setInterval> | undefined;
     if (isSlideshow && filteredItems.length > 0) {
       interval = setInterval(() => {
         goToNext();
       }, slideshowSpeed);
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [isSlideshow, filteredItems.length, slideshowSpeed, currentIndex]);
 
   // Preload adjacent images with caching
@@ -143,7 +194,6 @@ export default function FavoritesViewer() {
           img.src = item.url;
           img.onload = () => {
             setImageCache(prev => ({...prev, [item.url]: true}));
-            setPreloadedImages(prev => ({...prev, [item.url]: true}));
           };
         }
       });
@@ -182,23 +232,21 @@ export default function FavoritesViewer() {
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen();
-      setIsFullscreen(true);
     } else {
       document.exitFullscreen();
-      setIsFullscreen(false);
     }
   };
 
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      //setIsFullscreen(!!document.fullscreenElement);
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
     const loadData = async () => {
-    const rows = await invoke("list_items"); // returns ItemDto[]
+    const rows = await invoke<ItemDto[]>("list_items"); // returns ItemDto[]
 
     const mapped = rows.map((r) => {
         const localUrl = convertFileSrc(r.file_abs);
@@ -221,15 +269,14 @@ export default function FavoritesViewer() {
     setItems(mapped);
 
     // Build tag list (same logic you already had)
-    const tags = new Set();
+    const tags = new Set<string>();
     mapped.forEach((item) => item.tags?.forEach((tag) => tags.add(tag)));
 
-    const sortedTags = Array.from(tags).sort((a, b) => {
-        const countA = mapped.filter((item) => item.tags?.includes(a)).length;
-        const countB = mapped.filter((item) => item.tags?.includes(b)).length;
-        return countB - countA;
+    const sortedTags: string[] = Array.from(tags).sort((a, b) => {
+      const countA = mapped.filter((item) => item.tags?.includes(a)).length;
+      const countB = mapped.filter((item) => item.tags?.includes(b)).length;
+      return countB - countA;
     });
-
     setAllTags(sortedTags);
     };
 
@@ -244,8 +291,8 @@ export default function FavoritesViewer() {
     }
   };
 
-  const saveFeeds = (newFeeds) => {
-    localStorage.setItem('e621_feeds', JSON.stringify(newFeeds));
+  const saveFeeds = (newFeeds: Feed[]) => {
+    localStorage.setItem("e621_feeds", JSON.stringify(newFeeds));
     setFeeds(newFeeds);
   };
 
@@ -263,14 +310,16 @@ export default function FavoritesViewer() {
     setNewFeedName('');
   };
 
-  const removeFeed = (feedId) => {
-    saveFeeds(feeds.filter(f => f.id !== feedId));
-    const newFeedPosts = {...feedPosts};
-    delete newFeedPosts[feedId];
-    setFeedPosts(newFeedPosts);
+  const removeFeed = (feedId: number) => {
+    saveFeeds(feeds.filter((f) => f.id !== feedId));
+    setFeedPosts((prev) => {
+      const copy = { ...prev };
+      delete copy[feedId];
+      return copy;
+    });
   };
 
-  const fetchFeedPosts = async (feedId, query, { reset = false } = {}) => {
+  const fetchFeedPosts = async (feedId: number, query: string, { reset = false }: { reset?: boolean } = {}) => {
     if (!apiUsername || !apiKey) {
       alert('Please set your e621 API credentials in the settings below');
       return;
@@ -329,7 +378,7 @@ export default function FavoritesViewer() {
       });
 
       // update cursor: next request should fetch older than the smallest id we have
-      const minId = newPosts.reduce((m, p) => Math.min(m, p.id), Number.POSITIVE_INFINITY);
+      const minId = newPosts.reduce((m: number, p: any) => Math.min(m, p.id), Number.POSITIVE_INFINITY);
 
       setFeedPaging(prev => ({
         ...prev,
@@ -340,67 +389,19 @@ export default function FavoritesViewer() {
       }));
     } catch (error) {
       console.error('Error fetching feed:', error);
-      alert('Error fetching feed: ' + error.message);
+      const msg = error instanceof Error ? error.message : String(error);
+      alert("Error fetching feed: " + msg);
     } finally {
       setLoadingFeeds(prev => ({ ...prev, [feedId]: false }));
     }
   };
 
-  const isFavorited = (url) => {
-    return items.some(item => item.remote_url === url || item.remoteUrl === url);
+  const isFavorited = (url: string) => {
+    return items.some((item) => item.remote_url === url);
   };
 
-  const toggleFavorite = (post) => {
-    const url = post.file.url;
-    
-    if (isFavorited(url)) {
-      const newItems = items.filter(item => item.url !== url);
-      setItems(newItems);
-      localStorage.setItem('favorites_data', JSON.stringify({ items: newItems }));
-    } else {
-      const newItem = {
-        source: 'e621',
-        id: post.id,
-        url: post.file.url,
-        tags: [...(post.tags.general || []), ...(post.tags.species || []), ...(post.tags.character || [])],
-        rating: post.rating,
-        artist: post.tags.artist || [],
-        timestamp: post.created_at
-      };
-      
-      const newItems = [...items, newItem];
-      setItems(newItems);
-      localStorage.setItem('favorites_data', JSON.stringify({ items: newItems }));
-    }
-  };
-
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    try {
-      const text = await file.text();
-      const data = JSON.parse(text);
-      
-      localStorage.setItem('favorites_data', JSON.stringify(data));
-      
-      setItems(data.items || []);
-      
-      const tags = new Set();
-      data.items?.forEach(item => {
-        item.tags?.forEach(tag => tags.add(tag));
-      });
-      const sortedTags = Array.from(tags).sort((a, b) => {
-        const countA = data.items.filter(item => item.tags?.includes(a)).length;
-        const countB = data.items.filter(item => item.tags?.includes(b)).length;
-        return countB - countA;
-      });
-      setAllTags(sortedTags);
-      
-      alert(`Loaded ${data.items?.length || 0} items!`);
-    } catch (error) {
-      alert('Error loading file: ' + error.message);
-    }
+  const toggleFavorite = (_post: any) => {
+    alert("Download-to-library from Feeds is not implemented yet.");
   };
 
   const filterItems = () => {
@@ -436,13 +437,13 @@ export default function FavoritesViewer() {
       filtered = [...filtered].sort((a, b) => {
         const dateA = new Date(a.timestamp || 0);
         const dateB = new Date(b.timestamp || 0);
-        return dateB - dateA;
+        return dateB.getTime() - dateA.getTime();
       });
     } else if (sortOrder === 'oldest') {
       filtered = [...filtered].sort((a, b) => {
         const dateA = new Date(a.timestamp || 0);
         const dateB = new Date(b.timestamp || 0);
-        return dateA - dateB;
+        return dateA.getTime() - dateB.getTime();
       });
     }
 
@@ -450,7 +451,7 @@ export default function FavoritesViewer() {
     setCurrentIndex(0);
   };
 
-  const toggleTag = (tag) => {
+  const toggleTag = (tag: string) => {
     setSelectedTags(prev =>
       prev.includes(tag)
         ? prev.filter(t => t !== tag)
@@ -649,13 +650,15 @@ export default function FavoritesViewer() {
                               fadeIn ? 'opacity-100' : 'opacity-0'
                             }`}
                             onLoadedData={(e) => {
-                              e.target.volume = 1.0;
+                              (e.currentTarget as HTMLVideoElement).volume = 1.0;
                               setImageLoading(false);
                             }}
                             onLoadStart={() => setImageLoading(true)}
                             onError={(e) => {
+                              const img = e.currentTarget; // HTMLImageElement
+                              img.src =
+                                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E";
                               setImageLoading(false);
-                              console.error('Video load error:', e);
                             }}
                           />
                         ) : (
@@ -669,7 +672,8 @@ export default function FavoritesViewer() {
                             onLoadStart={() => setImageLoading(true)}
                             onError={(e) => {
                               setImageLoading(false);
-                              e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg"...';
+                              const img = e.currentTarget as HTMLImageElement;
+                              img.src = "data:image/svg+xml,...";
                             }}
                           />
                         )}

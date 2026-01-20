@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "local-favorites-library",
+  "productName": "Guacamole Viewer",
   "version": "0.1.0",
   "identifier": "com.hattie-r.local-favorites-library",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "local-favorites-library",
+        "title": "Guacamole Viewer",
         "width": 800,
         "height": 600
       }
