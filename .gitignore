@@ -1,0 +1,41 @@
+# ---- Logs ----
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ---- Node / Vite ----
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# ---- Tauri / Rust ----
+src-tauri/target/
+target/
+src-tauri/gen/         # sometimes generated
+src-tauri/.tauri/      # older tooling
+src-tauri/dist/        # if it appears in your setup
+
+# ---- OS / Editor ----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ---- Safety: local library data (ONLY if your library root might ever be inside repo) ----
+media/
+cache/
+.trash/
+db/
+*.sqlite
+*.sqlite-*
