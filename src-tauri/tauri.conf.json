@@ -21,7 +21,17 @@
       "csp": null,
       "assetProtocol": {
         "enable": true
-      }
+      },
+      "capabilities": [
+        {
+          "identifier": "main-capability",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "shell:allow-open"
+          ]
+        }
+      ]
     }
   },
   "bundle": {

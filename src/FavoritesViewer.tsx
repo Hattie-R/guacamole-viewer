@@ -1,12 +1,13 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
-  Database, Loader2
+  Database, Loader2, Volume2, VolumeX, Clock
 } from "lucide-react";
 
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 import Masonry from "react-masonry-css";
 
 /* =========================
@@ -78,12 +79,19 @@ type E621CredInfo = { username?: string | null; has_api_key: boolean };
 export default function FavoritesViewer() {
   const [activeTab, setActiveTab] = useState('viewer');
   const [items, setItems] = useState<LibraryItem[]>([]);
-  const [filteredItems, setFilteredItems] = useState<LibraryItem[]>([]);
   const [searchTags, setSearchTags] = useState('');
-  const [sortOrder, setSortOrder] = useState<'random' | 'default' | 'score' | 'newest' | 'oldest'>('random');
+  const [sortOrder, setSortOrder] = useState(() => {
+    try {
+      return localStorage.getItem('preferred_sort_order') || 'default';
+    } catch {
+      return 'default';
+    }
+  });
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isSlideshow, setIsSlideshow] = useState(false);
   const [slideshowSpeed, setSlideshowSpeed] = useState(3000);
+  const [autoMuteVideos, setAutoMuteVideos] = useState(true);
+  const [waitForVideoEnd, setWaitForVideoEnd] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [fadeIn, setFadeIn] = useState(true);
@@ -114,7 +122,6 @@ export default function FavoritesViewer() {
   const [showHud, setShowHud] = useState(true);
   const hudHoverRef = useRef(false);
   const hudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasInitialShuffle = useRef(false);
   const HUD_TIMEOUT_MS = 2000; // 3–5 seconds; adjust
   const feedBreakpoints = {
     default: 3,
@@ -123,18 +130,18 @@ export default function FavoritesViewer() {
     520: 1,
   };
 
-  const scheduleHudHide = () => {
+  const scheduleHudHide = useCallback(() => {
     if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
 
     hudTimerRef.current = setTimeout(() => {
       if (!hudHoverRef.current) setShowHud(false);
     }, HUD_TIMEOUT_MS);
-  };
+  }, []);
 
-  const pokeHud = () => {
+  const pokeHud = useCallback(() => {
     setShowHud(true);
     scheduleHudHide();
-  };
+  }, [scheduleHudHide]);
 
   const refreshSyncStatus = async () => {
     const st = await invoke<SyncStatus>("e621_sync_status");
@@ -245,9 +252,18 @@ export default function FavoritesViewer() {
           p.id === id ? { ...p, is_favorited: true } : p
         ),
       }));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      alert(msg);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error("Failed to favorite post:", error);
+      
+      // More helpful error messages
+      if (msg.includes("network") || msg.includes("fetch")) {
+        alert("Network error. Please check your connection.");
+      } else if (msg.includes("no file URL") || msg.includes("deleted") || msg.includes("blocked")) {
+        alert("This post is not available (may be deleted or blocked).");
+      } else {
+        alert(`Failed to favorite: ${msg}`);
+      }
     } finally {
       setFeedActionBusy((prev) => ({ ...prev, [id]: false }));
     }
@@ -289,12 +305,12 @@ export default function FavoritesViewer() {
   };
 
   const changeLibraryRoot = async () => {
-    const dir = await open({ directory: true, multiple: false });
+    const dir = await openDialog({ directory: true, multiple: false });
     if (!dir || Array.isArray(dir)) return;
 
     await invoke("set_library_root", { libraryRoot: dir });
     await refreshLibraryRoot();
-    await loadData(); // reload items from the new DB/root
+    await loadData();
   };
 
   useEffect(() => {
@@ -335,14 +351,18 @@ export default function FavoritesViewer() {
       pokeHud();
       if (e.key === "Escape") {
         e.preventDefault();
+        // Exit fullscreen first if active
+        if (document.fullscreenElement) {
+          document.exitFullscreen();
+        }
+        // Close the overlay (fullscreen listener will handle sync)
         setViewerOverlay(false);
-        //toggleFullscreen();
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [viewerOverlay]);
+  }, [viewerOverlay, pokeHud]);
 
   useEffect(() => {
     return () => {
@@ -361,66 +381,131 @@ export default function FavoritesViewer() {
     refreshE621CredInfo().catch(console.error);
   }, []);
 
-  useEffect(() => {
-    filterItems();
-  }, [searchTags, items, selectedTags, sortOrder]);
+  // Calculate filtered items (must be before functions that use it)
+const filteredItems = useMemo(() => {
+  let filtered = items;
+
+  if (searchTags.trim()) {
+    const searchTerms = searchTags.toLowerCase().split(' ').filter(t => t);
+    filtered = filtered.filter(item => 
+      searchTerms.every(term => 
+        item.tags?.some(tag => tag.toLowerCase().includes(term))
+      )
+    );
+  }
+
+  if (selectedTags.length > 0) {
+    filtered = filtered.filter(item =>
+      selectedTags.every(tag =>
+        item.tags?.includes(tag)
+      )
+    );
+  }
+
+  // Apply sorting
+  if (sortOrder === 'random') {
+    filtered = [...filtered].sort(() => Math.random() - 0.5);
+  } else if (sortOrder === 'score') {
+    filtered = [...filtered].sort((a, b) => {
+      const scoreA = a.score?.total || 0;
+      const scoreB = b.score?.total || 0;
+      return scoreB - scoreA;
+    });
+  } else if (sortOrder === 'newest') {
+    filtered = [...filtered].sort((a, b) => {
+      const dateA = new Date(a.timestamp || 0);
+      const dateB = new Date(b.timestamp || 0);
+      return dateB.getTime() - dateA.getTime();
+    });
+  } else if (sortOrder === 'oldest') {
+    filtered = [...filtered].sort((a, b) => {
+      const dateA = new Date(a.timestamp || 0);
+      const dateB = new Date(b.timestamp || 0);
+      return dateA.getTime() - dateB.getTime();
+    });
+  }
+
+  return filtered;
+}, [items, searchTags, selectedTags, sortOrder]);
+
+// Reset to first item when filters change
+useEffect(() => {
+  setCurrentIndex(0);
+}, [filteredItems]);
 
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
-    if (isSlideshow && filteredItems.length > 0) {
-      interval = setInterval(() => {
-        goToNext();
-      }, slideshowSpeed);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isSlideshow, filteredItems.length, slideshowSpeed, currentIndex]);
+  if (!isSlideshow || filteredItems.length === 0) return;
+  
+  // If we should wait for videos to end, don't use interval for video items
+  const currentItem = filteredItems[currentIndex];
+  const isCurrentVideo = currentItem && ["mp4", "webm"].includes((currentItem.ext || "").toLowerCase());
+  
+  if (waitForVideoEnd && isCurrentVideo) {
+    // Let the video's onEnded event handle navigation
+    return;
+  }
+  
+  const interval = setInterval(() => {
+    setCurrentIndex((prev) => (prev + 1) % filteredItems.length);
+    setFadeIn(false);
+    setTimeout(() => setFadeIn(true), 150);
+  }, slideshowSpeed);
+  
+  return () => clearInterval(interval);
+}, [isSlideshow, slideshowSpeed, filteredItems.length, currentIndex, waitForVideoEnd]);
 
   // Preload adjacent images with caching
-  useEffect(() => {
-    if (filteredItems.length > 0) {
-      const preloadIndexes = [
-        currentIndex,
-        (currentIndex + 1) % filteredItems.length,
-        (currentIndex + 2) % filteredItems.length,
-        (currentIndex - 1 + filteredItems.length) % filteredItems.length
-      ];
+useEffect(() => {
+    if (filteredItems.length === 0) return;
+
+    const preloadIndexes = [
+      currentIndex,
+      (currentIndex + 1) % filteredItems.length,
+      (currentIndex + 2) % filteredItems.length,
+      (currentIndex - 1 + filteredItems.length) % filteredItems.length
+    ];
+    
+    preloadIndexes.forEach(idx => {
+      const item = filteredItems[idx];
+      if (!item || imageCache[item.url]) return;
+
+      const ext = (item.ext || "").toLowerCase();
+      if (["mp4", "webm"].includes(ext)) return;
       
-      preloadIndexes.forEach(idx => {
-        const item = filteredItems[idx];
-        if (item && !imageCache[item.url]) {
-          const src = item?.url;
-          if (!src) return;
+      const img = new Image();
+      img.src = item.url;
+      img.onload = () => {
+        setImageCache(prev => ({...prev, [item.url]: true}));
+      };
+    });
+  }, [currentIndex, filteredItems, imageCache]);
 
-          if (["mp4", "webm"].includes((item?.ext || "").toLowerCase())) return;
-          const img = new Image();
-          img.src = item.url;
-          img.onload = () => {
-            setImageCache(prev => ({...prev, [item.url]: true}));
-          };
-        }
-      });
+  // Save sort order preference
+  useEffect(() => {
+    try {
+      localStorage.setItem('preferred_sort_order', sortOrder);
+    } catch (error) {
+      console.error('Failed to save sort order preference:', error);
     }
-  }, [currentIndex, filteredItems]);
+  }, [sortOrder]);
 
-  const goToNext = (manual = false) => {
+  const goToNext = useCallback((manual = false) => {
     if (viewerOverlay && manual) pokeHud();
     setFadeIn(false);
     setTimeout(() => {
       setCurrentIndex((prev) => (prev + 1) % filteredItems.length);
       setFadeIn(true);
     }, 150);
-  };
+  }, [viewerOverlay, pokeHud, filteredItems.length]);
 
-  const goToPrev = (manual = false) => {
+  const goToPrev = useCallback((manual = false) => {
     if (viewerOverlay && manual) pokeHud();
     setFadeIn(false);
     setTimeout(() => {
       setCurrentIndex((prev) => (prev - 1 + filteredItems.length) % filteredItems.length);
       setFadeIn(true);
     }, 150);
-  };
+  }, [viewerOverlay, pokeHud, filteredItems.length]);
 
   const toggleFullscreen = () => {
     if (viewerOverlay) pokeHud();
@@ -430,19 +515,62 @@ export default function FavoritesViewer() {
       document.exitFullscreen();
     }
   };
-  
+  const openExternalUrl = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch (error) {
+      console.error("Failed to open URL:", error);
+      alert("Failed to open link in browser");
+    }
+  };
+
+  const getSocialMediaName = (url: string): string => {
+    try {
+      const urlLower = url.toLowerCase();
+      
+      if (urlLower.includes('twitter.com') || urlLower.includes('x.com')) return 'Twitter';
+      if (urlLower.includes('furaffinity.net')) return 'FurAffinity';
+      if (urlLower.includes('patreon.com')) return 'Patreon';
+      if (urlLower.includes('inkbunny.net')) return 'Inkbunny';
+      if (urlLower.includes('bsky.app') || urlLower.includes('bluesky')) return 'Bluesky';
+      if (urlLower.includes('deviantart.com') || urlLower.includes('deviantar.com')) return 'DeviantArt';
+      if (urlLower.includes('artstation.com')) return 'ArtStation';
+      if (urlLower.includes('pixiv.net')) return 'Pixiv';
+      if (urlLower.includes('tumblr.com')) return 'Tumblr';
+      if (urlLower.includes('reddit.com')) return 'Reddit';
+      if (urlLower.includes('instagram.com')) return 'Instagram';
+      if (urlLower.includes('weasyl.com')) return 'Weasyl';
+      if (urlLower.includes('sofurry.com')) return 'SoFurry';
+      if (urlLower.includes('newgrounds.com')) return 'Newgrounds';
+      if (urlLower.includes('mastodon')) return 'Mastodon';
+      if (urlLower.includes('cohost.org')) return 'Cohost';
+      if (urlLower.includes('itaku.ee')) return 'Itaku';
+      
+      // Try to extract domain name as fallback
+      const hostname = new URL(url).hostname.replace('www.', '');
+      const domain = hostname.split('.')[0];
+      return domain.charAt(0).toUpperCase() + domain.slice(1);
+    } catch {
+      return 'Source';
+    }
+  };
+
   useEffect(() => {
     const handleFullscreenChange = () => {
-      //setIsFullscreen(!!document.fullscreenElement);
+      // If we exit fullscreen, also close the viewer overlay
+      if (!document.fullscreenElement && viewerOverlay) {
+        setViewerOverlay(false);
+      }
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
+  }, [viewerOverlay]);
 
     const loadData = async () => {
-    const rows = await invoke<ItemDto[]>("list_items"); // returns ItemDto[]
+      try {
+        const rows = await invoke<ItemDto[]>("list_items");
 
-    const mapped = rows.map((r) => {
+        const mapped = rows.map((r) => {
         const localUrl = convertFileSrc(r.file_abs);
 
         return {
@@ -478,6 +606,10 @@ export default function FavoritesViewer() {
       return countB - countA;
     });
     setAllTags(sortedTags);
+      } catch (error) {
+        console.error("Failed to load library:", error);
+        alert("Failed to load library. Please check your library settings.");
+      }
     };
 
   const loadFeeds = () => {
@@ -552,20 +684,15 @@ export default function FavoritesViewer() {
       const newPosts = data.posts || [];
 
       // append + dedupe by id
+      // append + dedupe by id
       setFeedPosts(prev => {
         const existing = reset ? [] : (prev[feedId] || []);
         const merged = [...existing, ...newPosts];
-
-        const seen = new Set();
-        const deduped = [];
-        for (const p of merged) {
-          if (!seen.has(p.id)) {
-            seen.add(p.id);
-            deduped.push(p);
-          }
-        }
-
-        return { ...prev, [feedId]: deduped };
+        
+        // More efficient deduplication using Map
+        const uniqueMap = new Map();
+        merged.forEach(p => uniqueMap.set(p.id, p));
+        return { ...prev, [feedId]: Array.from(uniqueMap.values()) };
       });
 
       // update cursor
@@ -587,54 +714,10 @@ export default function FavoritesViewer() {
     }
   };
 
-
-  const filterItems = () => {
-    let filtered = items;
-
-    if (searchTags.trim()) {
-      const searchTerms = searchTags.toLowerCase().split(' ').filter(t => t);
-      filtered = filtered.filter(item => 
-        searchTerms.every(term => 
-          item.tags?.some(tag => tag.toLowerCase().includes(term))
-        )
-      );
-    }
-
-    if (selectedTags.length > 0) {
-      filtered = filtered.filter(item =>
-        selectedTags.every(tag =>
-          item.tags?.includes(tag)
-        )
-      );
-    }
-
-    // Apply sorting
-    if ((sortOrder === 'random' || sortOrder === 'default') && !hasInitialShuffle.current) {
-      filtered = [...filtered].sort(() => Math.random() - 0.5);
-      hasInitialShuffle.current = true;
-    } else if (sortOrder === 'score') {
-      filtered = [...filtered].sort((a, b) => {
-        const scoreA = a.score?.total || 0;
-        const scoreB = b.score?.total || 0;
-        return scoreB - scoreA;
-      });
-    } else if (sortOrder === 'newest') {
-      filtered = [...filtered].sort((a, b) => {
-        const dateA = new Date(a.timestamp || 0);
-        const dateB = new Date(b.timestamp || 0);
-        return dateB.getTime() - dateA.getTime();
-      });
-    } else if (sortOrder === 'oldest') {
-      filtered = [...filtered].sort((a, b) => {
-        const dateA = new Date(a.timestamp || 0);
-        const dateB = new Date(b.timestamp || 0);
-        return dateA.getTime() - dateB.getTime();
-      });
-    }
-
-    setFilteredItems(filtered);
+  // Reset to first item when filters change
+  useEffect(() => {
     setCurrentIndex(0);
-  };
+  }, [filteredItems]);
 
   const toggleTag = (tag: string) => {
     setSelectedTags(prev =>
@@ -700,19 +783,20 @@ export default function FavoritesViewer() {
           </div>
         </div>
         {showSettings && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div
               className="absolute inset-0 bg-black/60"
               onClick={() => setShowSettings(false)}
             />
-            <div className="relative z-10 w-full max-w-xl bg-gray-800 border border-gray-700 rounded-lg p-5">
-              <div className="flex items-center justify-between mb-4">
+            <div className="relative z-10 w-full max-w-xl max-h-[90vh] bg-gray-800 border border-gray-700 rounded-lg flex flex-col">
+              <div className="flex items-center justify-between p-5 border-b border-gray-700 flex-shrink-0">
                 <h2 className="text-lg font-semibold">Settings</h2>
                 <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-200">
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
+              <div className="overflow-y-auto p-5 space-y-3">
               <div className="space-y-3">
                 <div>
                   <div className="text-sm text-gray-400 mb-1">Library folder</div>
@@ -740,6 +824,32 @@ export default function FavoritesViewer() {
                   Changing library folder will switch to the database/media inside that folder.
                 </p>
               </div>
+                {/* Default Order */}
+              <div className="border-t border-gray-700 pt-4 mt-4">
+                <h3 className="text-lg font-semibold mb-2">Viewer Preferences</h3>
+                
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-sm text-gray-400 mb-1 block">Default sort order</label>
+                    <select
+                      value={sortOrder}
+                      onChange={(e) => setSortOrder(e.target.value)}
+                      className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500"
+                    >
+                      <option value="default">Default Order</option>
+                      <option value="random">Random</option>
+                      <option value="score">By Score</option>
+                      <option value="newest">Newest First</option>
+                      <option value="oldest">Oldest First</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      This will be used when the app starts
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+                {/* Credentials */}
               <div className="border-t border-gray-700 pt-4 mt-4">
                 <h3 className="text-lg font-semibold mb-2">e621</h3>
 
@@ -788,6 +898,7 @@ export default function FavoritesViewer() {
                   Get your API key from e621.net account settings. The app stores it locally.
                 </p>
               </div>
+                {/* Parcing */}
               <div className="border-t border-gray-700 pt-4 mt-4">
                 <h3 className="text-lg font-semibold mb-2">Sync Favorites</h3>
 
@@ -867,9 +978,12 @@ export default function FavoritesViewer() {
                               {u.sources.length > 0 ? (
                                 u.sources.map((s, i) => (
                                   <div key={i}>
-                                    <a className="text-purple-400 underline break-all" href={s} target="_blank" rel="noreferrer">
+                                    <button
+                                      onClick={() => openExternalUrl(s)}
+                                      className="text-purple-400 underline break-all cursor-pointer bg-transparent border-none p-0 text-left"
+                                    >
                                       {s}
-                                    </a>
+                                    </button>
                                   </div>
                                 ))
                               ) : (
@@ -884,6 +998,7 @@ export default function FavoritesViewer() {
                 </div>
               )}
             </div>
+          </div>
           </div>
         )}
       </div>
@@ -907,7 +1022,7 @@ export default function FavoritesViewer() {
 
                 <select
                   value={sortOrder}
-                  onChange={(e) => setSortOrder(e.target.value as typeof sortOrder)}
+                  onChange={(e) => setSortOrder(e.target.value)}
                   className="px-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:border-purple-500"
                 >
                   <option value="default">Default Order</option>
@@ -985,20 +1100,31 @@ export default function FavoritesViewer() {
                               src={currentItem.url}
                               controls
                               autoPlay
-                              loop
+                              loop={!waitForVideoEnd || !isSlideshow}
+                              muted={autoMuteVideos}
                               className={
                                 viewerOverlay
                                   ? `w-full h-full object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`
                                   : `w-full h-auto max-h-[70vh] object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`
                               }
+                              style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
                               onLoadedData={(e) => {
-                                (e.currentTarget as HTMLVideoElement).volume = 1.0;
+                                const video = e.currentTarget as HTMLVideoElement;
+                                if (!autoMuteVideos) {
+                                  video.volume = 1.0;
+                                }
                                 setImageLoading(false);
                               }}
                               onLoadStart={() => setImageLoading(true)}
                               onError={() => {
                                 setImageLoading(false);
                                 console.error("Video load error");
+                              }}
+                              onEnded={() => {
+                                // Auto-advance when video ends (if enabled and slideshow is active)
+                                if (waitForVideoEnd && isSlideshow) {
+                                  goToNext();
+                                }
                               }}
                             />
                           ) : (
@@ -1078,6 +1204,30 @@ export default function FavoritesViewer() {
                                     <option value={10000}>10s</option>
                                   </select>
 
+                                  <button
+                                    onClick={() => setAutoMuteVideos(!autoMuteVideos)}
+                                    className={`p-2 rounded ${
+                                      autoMuteVideos 
+                                        ? 'bg-purple-600 hover:bg-purple-700' 
+                                        : 'bg-gray-700 hover:bg-gray-600'
+                                    }`}
+                                    title="Mute all videos"
+                                  >
+                                    {autoMuteVideos ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                                  </button>
+
+                                  <button
+                                    onClick={() => setWaitForVideoEnd(!waitForVideoEnd)}
+                                    className={`p-2 rounded ${
+                                      waitForVideoEnd 
+                                        ? 'bg-purple-600 hover:bg-purple-700' 
+                                        : 'bg-gray-700 hover:bg-gray-600'
+                                    }`}
+                                    title="Wait for videos to finish before advancing"
+                                  >
+                                    <Clock className="w-5 h-5" />
+                                  </button>
+
                                   {/* This button now toggles overlay mode */}
                                   <button
                                     onClick={() => {setViewerOverlay((v) => !v);toggleFullscreen();}}
@@ -1118,28 +1268,40 @@ export default function FavoritesViewer() {
                   {currentItem && (
                     <div className="mt-4 bg-gray-800 rounded-lg p-4">
                       <div className="text-sm text-gray-400 mb-2">
-                        Source: <a 
-                          href={currentItem.sources?.[0] || `https://e621.net/posts/${currentItem.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-purple-400 hover:text-purple-300 underline"
+                        <button
+                          onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.id}`)}
+                          className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0"
                         >
                           e621
-                        </a>
+                        </button>
+                        {currentItem.sources && currentItem.sources.length > 0 && (
+                          <>
+                            {currentItem.sources.slice(0, 3).map((source, i) => (
+                              <span key={i}>
+                                {' • '}
+                                <button
+                                  onClick={() => openExternalUrl(source)}
+                                  className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0"
+                                  title={source}
+                                >
+                                  {getSocialMediaName(source)}
+                                </button>
+                              </span>
+                            ))}
+                          </>
+                        )}
                         {currentItem.artist && currentItem.artist.length > 0 && (
                           <>
                             {' • Artist: '}
                             {currentItem.artist.map((artist, i) => (
                               <span key={i}>
                                 {i > 0 && ', '}
-                                <a
-                                  href={`https://e621.net/posts?tags=${artist}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-purple-400 hover:text-purple-300 underline"
+                                <button
+                                  onClick={() => openExternalUrl(`https://e621.net/posts?tags=${artist}`)}
+                                  className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0"
                                 >
                                   {artist}
-                                </a>
+                                </button>
                               </span>
                             ))}
                           </>
@@ -1322,14 +1484,12 @@ export default function FavoritesViewer() {
                                   {artists.slice(0, 2).join(", ")}
                                 </p>
                               )}
-                              <a
-                                href={sourceUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
+                              <button
+                                onClick={() => openExternalUrl(sourceUrl)}
                                 className="px-3 py-1 bg-purple-600 hover:bg-purple-700 rounded text-xs text-white"
                               >
                                 View Source
-                              </a>
+                              </button>
                             </div>
                           </>
                         ) : (
