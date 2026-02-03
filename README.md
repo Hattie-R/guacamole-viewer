@@ -45,5 +45,4 @@ Developed with Tauri, React and Typescript in Vite. Just another *vibe-code* pro
 1) Fullscreen doesn't work with feeds
 2) UX of Feed
     Cannot preview videos
-    Need a better solution for switching between feeds
 3) Need an option to clear credentials

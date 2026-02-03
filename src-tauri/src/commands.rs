@@ -748,6 +748,21 @@ pub fn clear_library_root(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn e621_clear_credentials(app: tauri::AppHandle) -> Result<(), String> {
+    let path = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("e621_credentials.json");
+
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_library_stats(app: tauri::AppHandle) -> Result<u32, String> {
   let root = get_root(&app)?;
   let conn = db::open(&library::db_path(&root))?;

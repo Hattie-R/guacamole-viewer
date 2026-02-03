@@ -1010,7 +1010,7 @@ useEffect(() => {
                   />
                 </div>
 
-                <div className="flex gap-2 items-center">
+                <div className="flex gap-2 items-center flex-wrap">
                   <button
                     onClick={saveE621Credentials}
                     className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded"
@@ -1023,6 +1023,36 @@ useEffect(() => {
                     className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded"
                   >
                     Test connection
+                  </button>
+
+                  <button
+                    onClick={async () => {
+                      const ok = await confirmDialog(
+                        "Clear saved e621 credentials?\nYou'll need to enter them again to use feeds and sync.",
+                        {
+                          title: "Clear Credentials",
+                          okLabel: "Yes, clear",
+                          cancelLabel: "Cancel"
+                        }
+                      );
+                      
+                      if (!ok) return;
+
+                      try {
+                        await invoke("e621_clear_credentials");
+                        setApiUsername("");
+                        setApiKey("");
+                        await refreshE621CredInfo();
+                        alert("Credentials cleared.");
+                      } catch (error) {
+                        console.error("Failed to clear credentials:", error);
+                        alert("Failed to clear credentials: " + String(error));
+                      }
+                    }}
+                    disabled={!e621CredInfo.has_api_key && !e621CredInfo.username}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Clear
                   </button>
 
                   <div className="text-xs text-gray-400">
