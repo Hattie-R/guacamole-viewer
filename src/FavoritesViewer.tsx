@@ -540,6 +540,44 @@ useEffect(() => {
     }, 150);
   }, [viewerOverlay, pokeHud, filteredItems.length]);
 
+  
+  // Global keyboard navigation: left/right arrows and A/D
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Only react on the Viewer tab
+      if (activeTab !== "viewer") return;
+
+      // Ignore when typing in inputs, textareas, selects, or contentEditable
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        const editable = target.isContentEditable;
+        if (
+          editable ||
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT"
+        ) {
+          return;
+        }
+      }
+
+      // Normalize key (to handle 'a' and 'A')
+      const key = e.key;
+
+      if (key === "ArrowLeft" || key === "a" || key === "A") {
+        e.preventDefault();
+        goToPrev(true);
+      } else if (key === "ArrowRight" || key === "d" || key === "D") {
+        e.preventDefault();
+        goToNext(true);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeTab, goToNext, goToPrev]);
+
   const toggleFullscreen = () => {
     if (viewerOverlay) pokeHud();
     if (!document.fullscreenElement) {
