@@ -92,5 +92,18 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
   )
   .map_err(|e| e.to_string())?;
 
+  // Migration: Add file_md5 column if it doesn't exist
+  let count: u32 = conn.query_row(
+      "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='file_md5'",
+      [],
+      |row| row.get(0),
+  ).unwrap_or(0);
+
+  if count == 0 {
+      conn.execute("ALTER TABLE items ADD COLUMN file_md5 TEXT", []).map_err(|e| e.to_string())?;
+      // Create index for fast lookups
+      conn.execute("CREATE INDEX IF NOT EXISTS idx_items_md5 ON items(file_md5)", []).map_err(|e| e.to_string())?;
+  }
+
   Ok(())
 }

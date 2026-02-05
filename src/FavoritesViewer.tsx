@@ -18,6 +18,8 @@ type UnavailableDto = { source: string; source_id: string; seen_at: string; reas
 type Feed = { id: number; name: string; query: string };
 type FeedPagingState = { beforeId: number | null; done: boolean };
 type E621CredInfo = { username?: string | null; has_api_key: boolean };
+type FASyncStatus = { running: boolean; scanned: number; skipped_url: number; skipped_md5: number; imported: number; upgraded: number; errors: number; current_message: string;};
+type FACreds = { a: string; b: string };
 
 
 // --- THE COMPONENT ---
@@ -88,10 +90,31 @@ export default function FavoritesViewer() {
   const [showTagModal, setShowTagModal] = useState(false);
   const [editingTags, setEditingTags] = useState<string[]>([]);
   const [newTagInput, setNewTagInput] = useState("");
+  const [filterRating, setFilterRating] = useState('all');
+
+  // FurAffinity
+  const [faCreds, setFaCreds] = useState<FACreds>({ a: '', b: '' });
+  const [faStatus, setFaStatus] = useState<FASyncStatus | null>(null);
+  const [filterSource, setFilterSource] = useState('all'); // for filtering view
 
   // --- DERIVED STATE (useMemo) ---
   const filteredItems = useMemo(() => {
     let filtered = items;
+    if (filterSource !== 'all') {
+      filtered = filtered.filter(item => item.source === filterSource);
+    }
+    if (filterRating !== 'all') {
+      if (filterRating === 's') {
+        filtered = filtered.filter(item => item.rating === 's');
+      } else if (filterRating === 'q') {
+        filtered = filtered.filter(item => item.rating === 'q');
+      } else if (filterRating === 'e') {
+        filtered = filtered.filter(item => item.rating === 'e');
+      } else if (filterRating === 'nsfw') {
+        // Includes both Questionable and Explicit
+        filtered = filtered.filter(item => item.rating === 'q' || item.rating === 'e');
+      }
+    }
     if (searchTags.trim()) {
       const searchTerms = searchTags.toLowerCase().split(' ').filter(t => t);
       filtered = filtered.filter(item => searchTerms.every(term => item.tags?.some(tag => tag.toLowerCase().includes(term))));
@@ -104,7 +127,7 @@ export default function FavoritesViewer() {
     if (sortOrder === 'newest') return [...filtered].sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
     if (sortOrder === 'oldest') return [...filtered].sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
     return filtered;
-  }, [items, searchTags, selectedTags, sortOrder]);
+  }, [items, searchTags, selectedTags, sortOrder, filterSource, filterRating]);
 
   const currentItem = filteredItems[currentIndex];
   const ext = (currentItem?.ext || "").toLowerCase();
@@ -282,6 +305,30 @@ export default function FavoritesViewer() {
       alert("Failed to save tags: " + String(error));
     }
   };
+
+  const startFaSync = async () => {
+    if (!faCreds.a || !faCreds.b) {
+      alert("Please set Cookie A and Cookie B first.");
+      return;
+    }
+    await invoke("fa_set_credentials", { a: faCreds.a, b: faCreds.b });
+    await invoke("fa_start_sync");
+    
+    // Start polling
+    const interval = setInterval(async () => {
+      const st = await invoke<FASyncStatus>("fa_sync_status");
+      setFaStatus(st);
+      if (!st.running) {
+        clearInterval(interval);
+        loadData(); // Reload library when done
+      }
+    }, 1000);
+  };
+
+  const cancelFaSync = async () => {
+    await invoke("fa_cancel_sync");
+  };
+
   // --- EFFECTS ---
   // Build allTags whenever items change
   useEffect(() => {
@@ -482,6 +529,26 @@ export default function FavoritesViewer() {
                   <option value="newest">Newest First</option>
                   <option value="oldest">Oldest First</option>
                 </select>
+                <select
+                  value={filterRating}
+                  onChange={(e) => setFilterRating(e.target.value)}
+                  className="px-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:border-purple-500"
+                >
+                  <option value="all">All Ratings</option>
+                  <option value="s">Safe</option>
+                  <option value="q">Questionable</option>
+                  <option value="e">Explicit</option>
+                  <option value="nsfw">All NSFW (Q+E)</option>
+                </select>
+                <select 
+                  value={filterSource} 
+                  onChange={(e) => setFilterSource(e.target.value)}
+                  className="px-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:border-purple-500"
+                >
+                  <option value="all">All Sources</option>
+                  <option value="e621">e621 Only</option>
+                  <option value="furaffinity">FurAffinity Only</option>
+                </select>
                 <div className="text-gray-400 text-sm">Showing {filteredItems.length} <span className="mx-1">•</span> Loaded {items.length} <span className="mx-1">•</span> Total {totalDatabaseItems}</div>
               </div>
               {selectedTags.length > 0 && (
@@ -530,7 +597,7 @@ export default function FavoritesViewer() {
                   {currentItem && (
                     <div className="mt-4 bg-gray-800 rounded-lg p-4">
                       <div className="text-sm text-gray-400 mb-2">
-                        <button onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.id}`)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0">e621</button>
+                        {currentItem.source === 'e621' && (<button onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.id}`)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0">e621</button>)}
                         {currentItem.sources?.slice(0, 3).map((source, i) => (<span key={i}>{' • '}<button onClick={() => openExternalUrl(source)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0" title={source}>{getSocialMediaName(source)}</button></span>))}
                         {currentItem.artist?.map((artist, i) => (<span key={i}>{' • Artist: '}{i > 0 && ', '}<button onClick={() => openExternalUrl(`https://e621.net/posts?tags=${artist}`)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0">{artist}</button></span>))}
                       </div>
@@ -749,6 +816,54 @@ export default function FavoritesViewer() {
                   </div>
                 </div>
               )}
+              <div className="border-t border-gray-700 pt-4 mt-4">
+                <h3 className="text-lg font-semibold mb-2">FurAffinity Import</h3>
+                <div className="text-xs text-gray-400 mb-2">
+                  Requires your login cookies (a and b) to scan favorites.
+                </div>
+                
+                <div className="flex gap-2 mb-2">
+                  <input 
+                    type="text" 
+                    placeholder="Cookie A" 
+                    value={faCreds.a} 
+                    onChange={e => setFaCreds(prev => ({...prev, a: e.target.value}))}
+                    className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded"
+                  />
+                  <input 
+                    type="text" 
+                    placeholder="Cookie B" 
+                    value={faCreds.b} 
+                    onChange={e => setFaCreds(prev => ({...prev, b: e.target.value}))}
+                    className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded"
+                  />
+                </div>
+
+                <div className="flex gap-2 items-center">
+                  <button onClick={startFaSync} disabled={faStatus?.running} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded disabled:opacity-50">
+                    {faStatus?.running ? "Scanning..." : "Start Import"}
+                  </button>
+                  {faStatus?.running && (
+                    <button onClick={cancelFaSync} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded">
+                      Stop
+                    </button>
+                  )}
+                </div>
+
+                {faStatus && (
+                  <div className="mt-3 text-sm text-gray-300 space-y-1">
+                    <div className="mt-3 text-sm text-gray-300 space-y-1">
+                    <div>Status: {faStatus.current_message}</div>
+                    <div>Scanned: {faStatus.scanned}</div>
+                    <div>Skipped (URL): {faStatus.skipped_url}</div>
+                    <div>Skipped (MD5): {faStatus.skipped_md5}</div>
+                    <div className="text-purple-400">Upgraded to e621: {faStatus.upgraded}</div> {/* NEW */}
+                    <div className="text-green-400">FA Exclusives: {faStatus.imported}</div>
+                    <div>Errors: {faStatus.errors}</div>
+                  </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

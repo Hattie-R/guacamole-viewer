@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod db;
 mod library;
+pub mod fa; 
 
 use tauri::Manager; // ✅ required for fs_scope & asset_protocol_scope
 use tauri_plugin_fs::FsExt;
@@ -13,6 +14,7 @@ pub fn run() {
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_fs::init())
     .manage(Arc::new(Mutex::new(commands::SyncState::default())))
+    .manage(crate::fa::FAState::new())
     .setup(|app| {
       let handle = app.handle().clone();
 
@@ -37,6 +39,10 @@ pub fn run() {
       commands::get_library_stats,
       commands::clear_library_root,
       commands::update_item_tags,
+      commands::fa_set_credentials,
+      commands::fa_start_sync,
+      commands::fa_sync_status,
+      commands::fa_cancel_sync,
       commands::e621_clear_credentials,
       commands::e621_get_cred_info,
       commands::e621_set_credentials,

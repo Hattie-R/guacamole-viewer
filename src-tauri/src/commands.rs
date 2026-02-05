@@ -8,9 +8,10 @@ use tauri_plugin_fs::FsExt;
 use tauri::Manager;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
+use crate::fa::{FAState, FASyncStatus};
 
 
-fn get_root(app: &AppHandle) -> Result<PathBuf, String> {
+pub fn get_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
   let cfg = config::load_config(app)?;
   let root = cfg.library_root.ok_or("Library root not set yet")?;
   Ok(PathBuf::from(root))
@@ -729,6 +730,44 @@ pub fn e621_favorite(app: AppHandle, post_id: i64) -> Result<Status, String> {
   }
 
   Ok(Status { ok: true, message: "Favorited on e621".into() })
+}
+
+#[tauri::command]
+pub fn fa_set_credentials(app: tauri::AppHandle, a: String, b: String) -> Result<(), String> {
+    // Save these to a json file in app_config_dir, similar to e621 creds
+    let path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("fa_creds.json");
+    let json = serde_json::json!({ "a": a, "b": b });
+    std::fs::write(path, json.to_string()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fa_start_sync(app: tauri::AppHandle) -> Result<(), String> {
+    // Load creds
+    let path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("fa_creds.json");
+    if !path.exists() { return Err("No credentials set".into()); }
+    
+    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    let a = json["a"].as_str().unwrap_or("").to_string();
+    let b = json["b"].as_str().unwrap_or("").to_string();
+
+    tauri::async_runtime::spawn(async move {
+        crate::fa::run_sync(app, a, b).await;
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fa_sync_status(state: tauri::State<FAState>) -> FASyncStatus {
+    state.status.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn fa_cancel_sync(state: tauri::State<FAState>) {
+    *state.should_cancel.lock().unwrap() = true;
 }
 
 #[tauri::command]

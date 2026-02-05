@@ -28,4 +28,7 @@ chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json", "cookies", "multipart"] }
+scraper = "0.19"
+md5 = "0.7"
+tokio = { version = "1", features = ["time"] }
