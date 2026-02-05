@@ -12,6 +12,18 @@ Developed with Tauri, React and Typescript in Vite. Just another *vibe-code* pro
 6. In settings scroll down to **"Sync Favourites"** and press Start (*you can limit the amount of favourites to be synced*)
 7. After sync is finished you will see all of your favourites in the viewer, enjoy :3
 
+## Where to Get FurAffinity Cookies from?
+1. Login to your FA account and go to your favourites page
+2. Press F12 or Ctrl + Shift + I and go to Network
+3. Reload page and go back to the Developer Tool
+4. Scroll up to the first request
+5. Copy Cookies from the request header
+
+## How FurAffinity Sync Works
+
+TailBurrow uses a "Hybrid" strategy to ensure the best possible metadata for your collection. Since FurAffinity lacks a public API, the app uses your session cookies to securely scan your favorites locally. For every image found, TailBurrow calculates its MD5 hash and cross-references it with the e621 database. If a match is found on e621, the app automatically "upgrades" the import. It downloads the file from e621 instead, ensuring you get rich tagging, ratings, and metadata, while still linking back to the original FA source. If no match is found, the image is preserved as a FurAffinity Exclusive, with the artist name and rating scraped directly from the submission page.
+
+
 ## TODO list
 1. Thumbnails & previews (performance + masonry grid for your local library)
     Generate and cache:

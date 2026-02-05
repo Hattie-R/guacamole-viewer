@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    local_favorites_library_lib::run()
+    tail_burrow_lib::run()
 }

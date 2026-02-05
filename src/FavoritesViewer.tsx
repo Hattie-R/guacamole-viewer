@@ -38,9 +38,9 @@ export default function FavoritesViewer() {
 
   // Slideshow
   const [isSlideshow, setIsSlideshow] = useState(false);
-  const [slideshowSpeed, setSlideshowSpeed] = useState(3000);
-  const [autoMuteVideos, setAutoMuteVideos] = useState(true);
-  const [waitForVideoEnd, setWaitForVideoEnd] = useState(false);
+  const [slideshowSpeed, setSlideshowSpeed] = useState(5000);
+  const [autoMuteVideos, setAutoMuteVideos] = useState(false);
+  const [waitForVideoEnd, setWaitForVideoEnd] = useState(true);
   
   // Feeds
   const [feeds, setFeeds] = useState<Feed[]>([]);
@@ -240,12 +240,61 @@ export default function FavoritesViewer() {
   const getSocialMediaName = (url: string): string => {
     try {
       const urlLower = url.toLowerCase();
-      if (urlLower.includes('twitter.com') || urlLower.includes('x.com')) return 'Twitter/X';
+      
+      // --- Twitter / X ---
+      if (urlLower.includes('twitter.com') || urlLower.includes('x.com')) return 'Twitter';
+      if (urlLower.includes('pbs.twimg.com') || urlLower.includes('video.twimg.com')) return 'Twitter (File)';
+      
+      // --- Telegram ---
+      if (urlLower.includes('t.me') || urlLower.includes('telegram.org')) return 'Telegram';
+      
+      // --- Bluesky ---
+      if (urlLower.includes('bsky.app') || urlLower.includes('bluesky')) return 'Bluesky';
+      if (urlLower.includes('cdn.bsky.app') || urlLower.includes('oyster.us-east.host.bsky')) return 'Bluesky (File)';
+      
+      // --- Inkbunny ---
+      if (urlLower.includes('inkbunny.net')) return 'Inkbunny';
+      if (urlLower.includes('ib.metapix.net')) return 'Inkbunny (File)'; // tx.ib.metapix.net
+      
+      // --- FurAffinity ---
       if (urlLower.includes('furaffinity.net')) return 'FurAffinity';
+      
+      // --- Patreon ---
+      if (urlLower.includes('patreon.com')) return 'Patreon';
+      if (urlLower.includes('patreonusercontent.com')) return 'Patreon (File)';
+
+      // --- Discord ---
+      if (urlLower.includes('discordapp.com') || urlLower.includes('discord.com')) return 'Discord';
+      if (urlLower.includes('cdn.discordapp.com')) return 'Discord (File)';
+
+      // --- Tumblr ---
+      if (urlLower.includes('tumblr.com')) return 'Tumblr';
+      if (urlLower.includes('media.tumblr.com')) return 'Tumblr (File)';
+
+      // --- Other Art Sites ---
+      if (urlLower.includes('deviantart.com') || urlLower.includes('deviantar.com')) return 'DeviantArt';
+      if (urlLower.includes('artstation.com')) return 'ArtStation';
+      if (urlLower.includes('pixiv.net') || urlLower.includes('pximg.net')) return 'Pixiv';
+      if (urlLower.includes('reddit.com') || urlLower.includes('redd.it')) return 'Reddit';
+      if (urlLower.includes('instagram.com') || urlLower.includes('cdninstagram.com')) return 'Instagram';
+      if (urlLower.includes('weasyl.com')) return 'Weasyl';
+      if (urlLower.includes('sofurry.com')) return 'SoFurry';
+      if (urlLower.includes('newgrounds.com')) return 'Newgrounds';
+      if (urlLower.includes('mastodon')) return 'Mastodon';
+      if (urlLower.includes('cohost.org')) return 'Cohost';
+      if (urlLower.includes('itaku.ee')) return 'Itaku';
+      
+      // Fallback: Clean up hostname
       const hostname = new URL(url).hostname.replace('www.', '');
       const domain = hostname.split('.')[0];
+      
+      // Handle short domains like 't.me' resulting in 't'
+      if (domain.length <= 2) return hostname;
+      
       return domain.charAt(0).toUpperCase() + domain.slice(1);
-    } catch { return 'Source'; }
+    } catch {
+      return 'Source';
+    }
   };
   const loadFeeds = () => { try { const stored = localStorage.getItem('e621_feeds'); if (stored) setFeeds(JSON.parse(stored)); } catch {} };
   const saveFeeds = (newFeeds: Feed[]) => { localStorage.setItem("e621_feeds", JSON.stringify(newFeeds)); setFeeds(newFeeds); };
@@ -607,9 +656,67 @@ export default function FavoritesViewer() {
                   {currentItem && (
                     <div className="mt-4 bg-gray-800 rounded-lg p-4">
                       <div className="text-sm text-gray-400 mb-2">
-                        {currentItem.source === 'e621' && (<button onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.id}`)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0">e621</button>)}
-                        {currentItem.sources?.slice(0, 3).map((source, i) => (<span key={i}>{' • '}<button onClick={() => openExternalUrl(source)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0" title={source}>{getSocialMediaName(source)}</button></span>))}
-                        {currentItem.artist?.map((artist, i) => (<span key={i}>{' • Artist: '}{i > 0 && ', '}<button onClick={() => openExternalUrl(`https://e621.net/posts?tags=${artist}`)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0">{artist}</button></span>))}
+                        {/* 1. Main Source Button (if e621) */}
+                        {currentItem.source === 'e621' && (
+                          <button
+                            onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.item_id}`)} // Use item_id if source_id isn't reliable, or keep ID
+                            className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0"
+                          >
+                            e621
+                          </button>
+                        )}
+
+                        {/* 2. Other Sources (Filtered & Smart Bullets) */}
+                        {currentItem.sources && currentItem.sources.length > 0 && (() => {
+                          // Filter out the main e621 link so it doesn't show twice
+                          const otherSources = currentItem.sources.filter(s => 
+                            // Keep if it's NOT an e621 link OR if the main source isn't e621
+                            currentItem.source !== 'e621' || !s.includes('e621.net/posts')
+                          );
+
+                          return otherSources.slice(0, 3).map((source, i) => (
+                            <span key={i}>
+                              {/* Only show bullet if it's NOT the first item OR if we showed the e621 button before it */}
+                              {(i > 0 || currentItem.source === 'e621') && ' • '}
+                              <button
+                                onClick={() => openExternalUrl(source)}
+                                className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0"
+                                title={source}
+                              >
+                                {getSocialMediaName(source)}
+                              </button>
+                            </span>
+                          ));
+                        })()}
+                        {/* 3. Artists */}
+                        {(() => {
+                          // Filter out meta-artists
+                          const validArtists = (currentItem.artist || []).filter(a => 
+                            a !== 'conditional_dnp' && 
+                            a !== 'sound_warning' && 
+                            a !== 'unknown_artist' &&
+                            a !== 'epilepsy_warning'
+                          );
+
+                          if (validArtists.length === 0) return null;
+
+                          return (
+                            <span>
+                              {' • Artist: '}
+                              {validArtists.map((artist, i) => (
+                                <span key={i}>
+                                  {i > 0 && ', '}
+                                  <button
+                                    onClick={() => openExternalUrl(`https://e621.net/posts?tags=${artist}`)}
+                                    className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0"
+                                  >
+                                    {artist}
+                                  </button>
+                                </span>
+                              ))}
+                            </span>
+                          );
+                        })()}
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <div className="flex flex-wrap gap-2 items-center">

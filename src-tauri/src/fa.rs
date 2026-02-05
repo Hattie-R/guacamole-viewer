@@ -160,7 +160,11 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String) {
             s.current_message = format!("Scanning page {}...", page);
         }
 
-        let url = format!("https://www.furaffinity.net/controls/favorites/{}", page);
+        let url = if page == 1 {
+            "https://www.furaffinity.net/controls/favorites/".to_string()
+        } else {
+            format!("https://www.furaffinity.net/controls/favorites/{}/", page)
+        };
         let resp = match fa_client.get(&url).header("Cookie", &cookie_header).send().await {
             Ok(r) => r,
             Err(_) => break,
@@ -223,7 +227,6 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String) {
             let (download_url, fa_tags, artist_name, rating_char) = {
                 let view_doc = Html::parse_document(&view_html);
                 
-                // ... existing selectors ...
                 let download_selector = Selector::parse("div.download > a").unwrap();
                 let dl = match view_doc.select(&download_selector).next() {
                     Some(el) => Some(format!("https:{}", el.value().attr("href").unwrap_or(""))),
@@ -235,18 +238,43 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String) {
                     .map(|el| el.text().collect::<String>())
                     .collect();
 
-                // ... existing artist logic ...
-                let artist_selector = Selector::parse("div.submission-id-sub-container a strong").unwrap();
-                let artist = view_doc.select(&artist_selector)
-                    .next()
-                    .map(|el| el.text().collect::<String>())
-                    .unwrap_or("unknown".to_string())
-                    .replace(" ", "_")
-                    .to_lowercase();
+                // --- ROBUST ARTIST EXTRACTION ---
+                let mut artist = "unknown".to_string();
+                
+                // 1. Try HTML Selectors (Best for display names)
+                let selectors = [
+                    "div.submission-id-sub-container a strong",
+                    "div.submission-id-sub-container a[href*='/user/']",
+                    ".submission-sidebar .user-name"
+                ];
 
-                // --- NEW: RATING EXTRACTION ---
-                // FA puts the rating in a div like <div class="rating"><span class="adult">Adult</span></div>
-                // Or sometimes just an icon text.
+                for sel in selectors {
+                    let s = Selector::parse(sel).unwrap();
+                    if let Some(el) = view_doc.select(&s).next() {
+                        let text = el.text().collect::<String>().trim().to_string();
+                        if !text.is_empty() {
+                            artist = text;
+                            break;
+                        }
+                    }
+                }
+
+                // 2. Fail-safe: Extract from Download URL
+                // URL format: https://d.furaffinity.net/art/[ARTIST_NAME]/id/filename.ext
+                if artist == "unknown" {
+                    if let Some(url) = &dl {
+                        if let Some(start_idx) = url.find("/art/") {
+                            let rest = &url[start_idx + 5..]; // Skip "/art/"
+                            if let Some(end_idx) = rest.find('/') {
+                                artist = rest[..end_idx].to_string();
+                            }
+                        }
+                    }
+                }
+
+                let clean_artist = artist.replace(" ", "_").to_lowercase();
+
+                // --- RATING EXTRACTION ---
                 let rating_selector = Selector::parse("div.rating span").unwrap();
                 let rating_text = view_doc.select(&rating_selector)
                     .next()
@@ -256,10 +284,10 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String) {
                 let rating_char = match rating_text.as_str() {
                     "adult" => "e",
                     "mature" => "q",
-                    _ => "s", // Default to safe if "general" or unknown
+                    _ => "s",
                 };
                 
-                (dl, tags, artist, rating_char.to_string())
+                (dl, tags, clean_artist, rating_char.to_string())
             };
 
             let download_url = match download_url {
@@ -326,18 +354,39 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String) {
                     let item_id = tx.last_insert_rowid();
 
                     // Add Tags (From e621)
-                    let mut all_tags = vec![];
-                    all_tags.extend(e621_post.tags.general);
-                    all_tags.extend(e621_post.tags.species);
-                    all_tags.extend(e621_post.tags.character);
-                    all_tags.extend(e621_post.tags.artist); // These are artist tags
-                    
-                    for tag in all_tags {
-                        let clean = tag.trim().to_lowercase();
-                        tx.execute("INSERT OR IGNORE INTO tags (name, type) VALUES (?, 'general')", [&clean]).unwrap();
-                        let tag_id: i64 = tx.query_row("SELECT tag_id FROM tags WHERE name = ?", [&clean], |r| r.get(0)).unwrap();
-                        tx.execute("INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)", [item_id, tag_id]).unwrap();
-                    }
+                    let insert_tags_with_type = |tags: Vec<String>, t_type: &str, tx: &rusqlite::Transaction| {
+                        for tag in tags {
+                            let clean = tag.trim().to_lowercase();
+                            if clean.is_empty() { continue; }
+                            
+                            // Insert tag with specific type (artist, species, etc.)
+                            tx.execute(
+                                "INSERT OR IGNORE INTO tags (name, type) VALUES (?, ?)",
+                                params![&clean, t_type]
+                            ).unwrap();
+                            
+                            // Get ID
+                            let tag_id: i64 = tx.query_row(
+                                "SELECT tag_id FROM tags WHERE name = ?", 
+                                [&clean], 
+                                |r| r.get(0)
+                            ).unwrap();
+                            
+                            // Link
+                            tx.execute(
+                                "INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)", 
+                                [item_id, tag_id]
+                            ).unwrap();
+                        }
+                    };
+
+                    insert_tags_with_type(e621_post.tags.artist, "artist", &tx);
+                    insert_tags_with_type(e621_post.tags.copyright, "copyright", &tx);
+                    insert_tags_with_type(e621_post.tags.character, "character", &tx);
+                    insert_tags_with_type(e621_post.tags.species, "species", &tx);
+                    insert_tags_with_type(e621_post.tags.general, "general", &tx);
+                    insert_tags_with_type(e621_post.tags.meta, "meta", &tx);
+                    insert_tags_with_type(e621_post.tags.lore, "lore", &tx);
 
                     // Add Sources: e621 post URL + FA Source URL
                     let e621_src = format!("https://e621.net/posts/{}", e621_post.id);
