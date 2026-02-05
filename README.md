@@ -49,6 +49,3 @@ Developed with Tauri, React and Typescript in Vite. Just another *vibe-code* pro
     Log redaction + rotation; log location setting.
 
 7. Support for FurAffinity, Twitter and BlueSky
-Let's think how to implement Furaffinity import as well
-I want my app to scan furaffinity favorites for images that haven't been seen on your e621 (meaning e621 must have higher priority due to it having tags)
-After we have the FurAffinity exclusives we must be able to somehow see only them

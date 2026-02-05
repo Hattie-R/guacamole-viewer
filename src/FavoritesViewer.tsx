@@ -330,27 +330,86 @@ export default function FavoritesViewer() {
     return () => { if (t) clearInterval(t); };
   }, [showSettings]);
   
+    // Global keyboard navigation & shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // 1. Ignore if typing in an input
       const target = e.target as HTMLElement | null;
       const isTyping = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
       if (isTyping) return;
+
+      const key = e.key.toLowerCase();
+
+      // 2. Global Shortcuts
       if (e.key === "Escape") {
         e.preventDefault();
+        if (showSettings) {
+          setShowSettings(false);
+          return;
+        }
+        if (showTagModal) {
+          setShowTagModal(false);
+          return;
+        }
         if (viewerOverlay) {
           pokeHud();
           if (document.fullscreenElement) document.exitFullscreen();
           setViewerOverlay(false);
         }
       }
+
+      // S = Settings
+      if (key === "s") {
+        e.preventDefault();
+        setShowSettings(prev => !prev);
+      }
+
+      // 3. Viewer Specific Shortcuts
       if (activeTab === "viewer") {
-        if (e.key.toLowerCase() === "a" || e.key === "ArrowLeft") { e.preventDefault(); goToPrev(true); } 
-        else if (e.key.toLowerCase() === "d" || e.key === "ArrowRight") { e.preventDefault(); goToNext(true); }
+        // Navigation
+        if (key === "a" || e.key === "ArrowLeft") { 
+          e.preventDefault(); 
+          goToPrev(true); 
+        } 
+        else if (key === "d" || e.key === "ArrowRight") { 
+          e.preventDefault(); 
+          goToNext(true); 
+        }
+        
+        // F = Fullscreen
+        else if (key === "f") {
+          e.preventDefault();
+          setViewerOverlay(v => !v);
+          toggleFullscreen();
+        }
+        
+        // M = Mute
+        else if (key === "m") {
+          e.preventDefault();
+          setAutoMuteVideos(v => !v);
+        }
+        
+        // V = Wait for Video
+        else if (key === "v") {
+          e.preventDefault();
+          setWaitForVideoEnd(v => !v);
+        }
+
+        // E = Edit Tags
+        else if (key === "e") {
+          e.preventDefault();
+          if (currentItem) {
+            setEditingTags([...(currentItem.tags || [])]);
+            setNewTagInput("");
+            setShowTagModal(true);
+          }
+        }
       }
     };
+
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext]);
+  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, currentItem, showSettings, showTagModal]);
   
   useEffect(() => { if (viewerOverlay) pokeHud(); }, [viewerOverlay, pokeHud]);
   useEffect(() => { return () => { if (hudTimerRef.current) clearTimeout(hudTimerRef.current); }; }, []);
