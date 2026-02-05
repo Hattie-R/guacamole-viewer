@@ -1,6 +1,6 @@
 [package]
 name = "local-favorites-library"
-version = "0.1.3"
+version = "0.2.0"
 description = "A Tauri App"
 authors = ["Hattie R."]
 edition = "2021"
