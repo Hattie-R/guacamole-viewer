@@ -38,8 +38,6 @@ TailBurrow can scrape your FA favorites using your session cookies.
 4.  Copy the values for cookie `a` and cookie `b`.
 5.  Paste them into TailBurrow **Settings → FurAffinity Import**.
 
----
-
 ## 🛠️ How Sync Works
 
 TailBurrow uses a **"Hybrid Upgrade"** strategy to ensure the best possible metadata:
@@ -50,12 +48,9 @@ TailBurrow uses a **"Hybrid Upgrade"** strategy to ensure the best possible meta
     *   **Match Found:** The app **"upgrades"** the import. It downloads the file from e621 instead (often higher quality) and applies rich tags, ratings, and source links.
     *   **No Match:** The image is preserved as a **FurAffinity Exclusive**, with the artist name and rating scraped directly from the submission page.
 
----
-
 ## 🗺️ Roadmap
 
 *   **Performance:** Switch library view to a virtualized masonry grid with cached thumbnails for massive collections.
-*   **Trash Manager:** Restore deleted items and auto-empty settings.
 *   **Advanced Filters:** Filter by file type (image/video/gif).
 *   **Metadata Editor:** Tools to manually edit sources and ratings for imported items.
 *   **More Sources:** Support for Twitter/X and Bluesky archiving.

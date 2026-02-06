@@ -763,6 +763,96 @@ pub fn fa_start_sync(app: tauri::AppHandle, limit: Option<u32>) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn get_trashed_items(app: tauri::AppHandle) -> Result<Vec<ItemDto>, String> {
+    let root = get_root(&app)?;
+    let conn = db::open(&library::db_path(&root))?;
+
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT
+          i.item_id, i.source, i.source_id, i.remote_url, i.file_rel, i.ext,
+          i.rating, i.fav_count, i.score_total, i.created_at, i.added_at,
+          '', '', '' -- We don't need tags/sources for the trash view usually
+        FROM items i
+        WHERE i.trashed_at IS NOT NULL
+        ORDER BY i.trashed_at DESC
+        "#
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([], |r| {
+        let file_rel: String = r.get(4)?;
+        let file_abs = root.join(&file_rel);
+        
+        Ok(ItemDto {
+            item_id: r.get(0)?,
+            source: r.get(1)?,
+            source_id: r.get(2)?,
+            remote_url: r.get(3)?,
+            file_abs: file_abs.to_string_lossy().to_string(),
+            ext: r.get(5)?,
+            rating: r.get(6)?,
+            fav_count: r.get(7)?,
+            score_total: r.get(8)?,
+            timestamp: r.get(9)?,
+            added_at: r.get(10)?,
+            tags: vec![],
+            artists: vec![],
+            sources: vec![],
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut out = vec![];
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn restore_item(app: tauri::AppHandle, item_id: i64) -> Result<(), String> {
+    let root = get_root(&app)?;
+    let conn = db::open(&library::db_path(&root))?;
+    
+    conn.execute(
+        "UPDATE items SET trashed_at = NULL WHERE item_id = ?",
+        [item_id]
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
+    let root = get_root(&app)?;
+    let conn = db::open(&library::db_path(&root))?;
+
+    // 1. Get all files to delete
+    let mut stmt = conn.prepare("SELECT file_rel FROM items WHERE trashed_at IS NOT NULL")
+        .map_err(|e| e.to_string())?;
+    
+    let files_to_delete: Vec<String> = stmt.query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+
+    // 2. Delete from Disk
+    for rel_path in files_to_delete {
+        let abs_path = root.join(rel_path);
+        if abs_path.exists() {
+            let _ = std::fs::remove_file(abs_path); // Ignore errors if file missing
+        }
+    }
+
+    // 3. Delete from DB (Cascades should handle tags/sources if set up, but let's be clean)
+    // Note: If you don't have ON DELETE CASCADE in your schema, you might leave orphan tags.
+    // For simplicity, we just delete the item row here.
+    conn.execute("DELETE FROM items WHERE trashed_at IS NOT NULL", [])
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
 pub fn fa_sync_status(state: tauri::State<FAState>) -> FASyncStatus {
     state.status.lock().unwrap().clone()
 }
@@ -1034,32 +1124,61 @@ fn upsert_source(conn: &Connection, url: &str) -> Result<i64, String> {
 
 
 #[tauri::command]
-pub fn trash_item(app: AppHandle, item_id: i64) -> Result<Status, String> {
-  let root = get_root(&app)?;
-  let conn = db::open(&library::db_path(&root))?;
+pub fn trash_item(app: tauri::AppHandle, item_id: i64) -> Result<(), String> {
+    let root = get_root(&app)?;
+    let conn = db::open(&library::db_path(&root))?;
+    
+    // Soft delete: Set trashed_at to current timestamp
+    let now = chrono::Local::now().to_rfc3339();
+    
+    conn.execute(
+        "UPDATE items SET trashed_at = ? WHERE item_id = ?",
+        [now, item_id.to_string()] // Convert i64 to string just in case, but params usually handles it
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
 
-  let file_rel: String = conn.query_row(
-    "SELECT file_rel FROM items WHERE item_id=? AND trashed_at IS NULL",
-    params![item_id],
-    |r: &Row| r.get(0),
-  ).map_err(|e| e.to_string())?;
+#[tauri::command]
+pub fn auto_clean_trash(app: tauri::AppHandle) {
+    let _ = prune_expired_trash(&app);
+}
 
-  let src_abs = root.join(&file_rel);
+// Prune items trashed more than 30 days ago
+pub fn prune_expired_trash(app: &tauri::AppHandle) -> Result<(), String> {
+    let root = match get_root(app) {
+        Ok(r) => r,
+        Err(_) => return Ok(()), // No library loaded yet
+    };
+    
+    let conn = db::open(&library::db_path(&root)).map_err(|e| e.to_string())?;
 
-  let trash_rel = file_rel.replacen("media/", ".trash/media/", 1);
-  let dst_abs = root.join(&trash_rel);
+    // 1. Find expired files
+    // SQL: Select items trashed > 30 days ago
+    // We use SQLite's datetime functions. 
+    // 'now' is UTC. 'trashed_at' is stored as ISO8601 string.
+    let mut stmt = conn.prepare(
+        "SELECT file_rel FROM items WHERE trashed_at < datetime('now', '-30 days') AND trashed_at IS NOT NULL"
+    ).map_err(|e| e.to_string())?;
 
-  if let Some(parent) = dst_abs.parent() {
-    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-  }
+    let files_to_delete: Vec<String> = stmt.query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
 
-  fs::rename(&src_abs, &dst_abs).map_err(|e| e.to_string())?;
+    // 2. Delete files from disk
+    for rel_path in files_to_delete {
+        let abs_path = root.join(rel_path);
+        if abs_path.exists() {
+            let _ = std::fs::remove_file(abs_path);
+        }
+    }
 
-  let now = Utc::now().to_rfc3339();
-  conn.execute(
-    "UPDATE items SET trashed_at=? WHERE item_id=?",
-    params![now, item_id]
-  ).map_err(|e| e.to_string())?;
+    // 3. Delete rows from DB
+    conn.execute(
+        "DELETE FROM items WHERE trashed_at < datetime('now', '-30 days') AND trashed_at IS NOT NULL",
+        []
+    ).map_err(|e| e.to_string())?;
 
-  Ok(Status { ok: true, message: "Moved to trash".into() })
+    Ok(())
 }

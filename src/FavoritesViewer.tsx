@@ -4,7 +4,7 @@ import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
   Database, Loader2, Volume2, VolumeX, Clock, Pencil, 
-  RefreshCw, Info
+  RefreshCw, Info, Undo
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
@@ -94,6 +94,8 @@ export default function FavoritesViewer() {
   const [editingTags, setEditingTags] = useState<string[]>([]);
   const [newTagInput, setNewTagInput] = useState("");
   const [filterRating, setFilterRating] = useState('all');
+  const [showTrashModal, setShowTrashModal] = useState(false);
+  const [trashedItems, setTrashedItems] = useState<LibraryItem[]>([]);
 
 
   // FurAffinity
@@ -320,7 +322,10 @@ export default function FavoritesViewer() {
     finally { setLoadingFeeds(prev => ({ ...prev, [feedId]: false })); }
   };
   const toggleTag = (tag: string) => setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
-  const deleteCurrentItem = async () => { if (!currentItem) return; await invoke("trash_item", { itemId: currentItem.item_id }); await loadData(); };
+  const deleteCurrentItem = async () => { 
+    if (!currentItem) return; 
+    await invoke("trash_item", { itemId: currentItem.item_id }); 
+    await loadData(); };
   const saveTags = async () => {
     if (!currentItem) return;
     
@@ -440,6 +445,39 @@ export default function FavoritesViewer() {
     );
   };
 
+  const loadTrash = async () => {
+    const rows = await invoke<ItemDto[]>("get_trashed_items");
+    const mapped = rows.map((r): LibraryItem => ({
+      ...r,
+      url: convertFileSrc(r.file_abs),
+      id: Number(r.source_id),
+      artist: [],
+      tags: [],
+      sources: [],
+      score: { total: 0 }
+    }));
+    setTrashedItems(mapped);
+    setShowTrashModal(true);
+  };
+
+  const handleRestore = async (itemId: number) => {
+    await invoke("restore_item", { itemId });
+    setTrashedItems(prev => prev.filter(i => i.item_id !== itemId));
+    // We should reload the main library in the background so it shows up when we close modal
+    loadData(false); 
+  };
+
+  const handleEmptyTrash = async () => {
+    const ok = await confirmDialog(
+      "Permanently delete all items in trash? This cannot be undone.", 
+      { title: "Empty Trash", okLabel: "Delete Forever", cancelLabel: "Cancel" }
+    );
+    if (!ok) return;
+
+    await invoke("empty_trash");
+    setTrashedItems([]);
+  };
+
   // --- EFFECTS ---
   // Build allTags whenever items change
   useEffect(() => {
@@ -467,6 +505,8 @@ export default function FavoritesViewer() {
         loadFeeds();
         await refreshE621CredInfo();
         //Check FA status
+        // Clean old trash quietly in background
+        invoke("auto_clean_trash");
         const faInfo = await invoke<{ has_creds: boolean }>("fa_get_cred_info");
         setFaCredsSet(faInfo.has_creds);
       } catch (error) { console.error("Failed to initialize:", error); } 
@@ -978,7 +1018,14 @@ export default function FavoritesViewer() {
             <div className="overflow-y-auto p-5 space-y-4">
               <div><h3 className="text-lg font-semibold mb-2">Library</h3>
                 <div className="text-sm text-gray-400 mb-1">Library folder</div><div className="text-xs text-gray-200 break-all bg-gray-900 border border-gray-700 rounded p-2">{libraryRoot || "(not set)"}</div>
-                <div className="flex gap-2 mt-3"><button onClick={changeLibraryRoot} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded">Change/Create Library</button><button onClick={async () => { const ok = await confirmDialog("Unload the current library?", { title: "Unload Library", okLabel: "Yes, unload", cancelLabel: "Cancel" }); if (!ok) return; try { await invoke("clear_library_root"); setLibraryRoot(""); setItems([]); setAllTags([]); setTotalDatabaseItems(0); setHasMoreItems(true); setDownloadedE621Ids(new Set()); setShowSettings(false); } catch (e) { console.error("Failed to unload:", e); alert("Failed to unload: " + String(e)); } }} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded">Unload Library</button></div>
+                <div className="flex gap-2 mt-3"><button onClick={changeLibraryRoot} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded">Change/Create Library</button><button 
+                  onClick={() => { setShowSettings(false); loadTrash(); }} 
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded flex items-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Trash ({totalDatabaseItems - items.length > 0 ? "?" : "Manager"})
+                </button>
+                <button onClick={async () => { const ok = await confirmDialog("Unload the current library?", { title: "Unload Library", okLabel: "Yes, unload", cancelLabel: "Cancel" }); if (!ok) return; try { await invoke("clear_library_root"); setLibraryRoot(""); setItems([]); setAllTags([]); setTotalDatabaseItems(0); setHasMoreItems(true); setDownloadedE621Ids(new Set()); setShowSettings(false); } catch (e) { console.error("Failed to unload:", e); alert("Failed to unload: " + String(e)); } }} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded">Unload Library</button></div>
               </div>
               <div className="border-t border-gray-700 pt-4">
                 <h3 className="text-lg font-semibold mb-2">Viewer</h3>
@@ -1291,6 +1338,75 @@ export default function FavoritesViewer() {
               >
                 Save Tags
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Trash Manager Modal */}
+      {showTrashModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowTrashModal(false)} />
+          <div className="relative z-10 w-full max-w-4xl max-h-[90vh] bg-gray-800 border border-gray-700 rounded-lg flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-5 border-b border-gray-700 flex-shrink-0">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Trash2 className="w-5 h-5 text-gray-400" />
+                Trash Manager
+              </h2>
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleEmptyTrash}
+                  disabled={trashedItems.length === 0}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded disabled:opacity-50 text-sm font-medium"
+                >
+                  Empty Trash
+                </button>
+                <button onClick={() => setShowTrashModal(false)} className="text-gray-400 hover:text-gray-200">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-5">
+              {trashedItems.length > 0 ? (
+                <Masonry
+                  breakpointCols={4}
+                  className="flex w-auto gap-3"
+                  columnClassName="flex flex-col gap-3"
+                >
+                  {trashedItems.map((item) => {
+                    const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
+                    return (
+                      <div key={item.item_id} className="relative group bg-gray-700 rounded overflow-hidden border border-gray-600">
+                        {isVid ? (
+                          <video src={item.url} className="w-full h-auto object-cover opacity-60" />
+                        ) : (
+                          <img src={item.url} className="w-full h-auto object-cover opacity-60" loading="lazy" />
+                        )}
+                        
+                        <div className="absolute inset-0 flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 bg-black/50 transition-opacity">
+                          <button
+                            onClick={() => handleRestore(item.item_id)}
+                            className="p-2 bg-green-600 hover:bg-green-700 rounded-full text-white"
+                            title="Restore"
+                          >
+                            <Undo className="w-5 h-5" />
+                          </button>
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 p-1 bg-black/60 text-xs text-gray-300 text-center">
+                          {item.source} #{item.id}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </Masonry>
+              ) : (
+                <div className="text-center py-20 text-gray-500">
+                  <Trash2 className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                  <p>Trash is empty</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
