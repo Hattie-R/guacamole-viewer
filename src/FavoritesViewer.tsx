@@ -375,6 +375,16 @@ export default function FavoritesViewer() {
     }, 1000);
   };
 
+  const refreshFaCreds = async () => {
+    try {
+      // Check if the file exists on the backend
+      const info = await invoke<{ has_creds: boolean }>("fa_get_cred_info");
+      setFaCredsSet(info.has_creds);
+    } catch (error) {
+      console.error("Failed to check FA creds:", error);
+    }
+  };
+
   const cancelFaSync = async () => {
     await invoke("fa_cancel_sync");
   };
@@ -504,13 +514,12 @@ export default function FavoritesViewer() {
         await refreshLibraryRoot();
         loadFeeds();
         await refreshE621CredInfo();
-        //Check FA status
-        // Clean old trash quietly in background
-        invoke("auto_clean_trash");
-        const faInfo = await invoke<{ has_creds: boolean }>("fa_get_cred_info");
-        setFaCredsSet(faInfo.has_creds);
-      } catch (error) { console.error("Failed to initialize:", error); } 
-      finally { setInitialLoading(false); }
+        await refreshFaCreds(); // <--- ADD THIS LINE
+      } catch (error) { 
+        console.error("Failed to initialize:", error); 
+      } finally { 
+        setInitialLoading(false); 
+      }
     };
     init();
   }, []);
@@ -1223,6 +1232,7 @@ export default function FavoritesViewer() {
                         if(!faCreds.a || !faCreds.b) return alert("Enter both cookies");
                         await invoke("fa_set_credentials", { a: faCreds.a, b: faCreds.b });
                         setFaCredsSet(true);
+                        await refreshFaCreds();
                         setIsEditingFA(false);
                         setFaCreds({ a: '', b: '' }); // Clear inputs for security
                       }} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded">Save Cookies</button>
@@ -1251,9 +1261,15 @@ export default function FavoritesViewer() {
                 </div>
 
                 {/* Status Output */}
-                {faStatus && (
+                {faStatus && (faStatus.running || faStatus.scanned > 0) && (
                   <div className="mt-3 text-sm text-gray-300 space-y-1">
-                    {/* ... your status block ... */}
+                    <div>Status: {faStatus.current_message}</div>
+                    <div>Scanned: {faStatus.scanned}</div>
+                    <div>Skipped (URL): {faStatus.skipped_url}</div>
+                    <div>Skipped (MD5): {faStatus.skipped_md5}</div>
+                    <div className="text-purple-400">Upgraded to e621: {faStatus.upgraded}</div>
+                    <div className="text-green-400">FA Exclusives: {faStatus.imported}</div>
+                    <div>Errors: {faStatus.errors}</div>
                   </div>
                 )}
               </div>

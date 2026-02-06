@@ -16,9 +16,9 @@ pub struct FASyncStatus {
     pub running: bool,
     pub scanned: u32,
     pub skipped_url: u32,
-    pub skipped_md5: u32, // Local skipped
+    pub skipped_md5: u32,
     pub imported: u32,
-    pub upgraded: u32,    // New: Found on e621 and upgraded
+    pub upgraded: u32,
     pub errors: u32,
     pub current_message: String,
 }
@@ -95,12 +95,9 @@ fn check_local_md5(conn: &Connection, hash: &str) -> bool {
     count > 0
 }
 
-// Check e621 API for this hash
 async fn check_e621_md5(client: &reqwest::Client, hash: &str) -> Option<E621Post> {
-    // We try to find it on e621
     let url = format!("https://e621.net/posts.json?tags=md5:{}", hash);
-    // User-Agent is mandatory for e621
-    match client.get(&url).header("User-Agent", "LocalFavorites/0.1.0 (by Hattie)").send().await {
+    match client.get(&url).header("User-Agent", "TailBurrow/0.1.0").send().await {
         Ok(resp) => {
             if let Ok(json) = resp.json::<E621Response>().await {
                 return json.posts.into_iter().next();
@@ -122,15 +119,12 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
         *state.should_cancel.lock().unwrap() = false;
     }
 
-    // Client for FA (Needs cookies)
     let fa_client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .build()
         .unwrap();
 
-    // Client for e621 (Clean client, no cookies)
     let e621_client = reqwest::Client::new();
-
     let cookie_header = format!("a={}; b={}", cookie_a, cookie_b);
 
     let root = match crate::commands::get_root(&app) {
@@ -144,7 +138,6 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
     };
     let db_path = library::db_path(&root);
 
-    // Ensure 'media' folder exists
     let media_dir = root.join("media");
     if !media_dir.exists() {
         let _ = fs::create_dir_all(&media_dir);
@@ -165,6 +158,7 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
         } else {
             format!("https://www.furaffinity.net/controls/favorites/{}/", page)
         };
+
         let resp = match fa_client.get(&url).header("Cookie", &cookie_header).send().await {
             Ok(r) => r,
             Err(_) => break,
@@ -201,14 +195,13 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
 
             let conn = db::open(&db_path).unwrap();
 
-            // 1. FAST LOCAL CHECK: Do we already have this specific FA ID?
+            // 1. FAST LOCAL CHECK
             if check_db_exists(&conn, "furaffinity", &id_str) {
                 let mut s = state.status.lock().unwrap();
                 s.skipped_url += 1;
                 continue; 
             }
 
-            // Be polite to FA
             tokio::time::sleep(Duration::from_millis(800)).await; 
 
             // 2. Fetch Submission Page
@@ -238,10 +231,7 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
                     .map(|el| el.text().collect::<String>())
                     .collect();
 
-                // --- ROBUST ARTIST EXTRACTION ---
                 let mut artist = "unknown".to_string();
-                
-                // 1. Try HTML Selectors (Best for display names)
                 let selectors = [
                     "div.submission-id-sub-container a strong",
                     "div.submission-id-sub-container a[href*='/user/']",
@@ -259,12 +249,10 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
                     }
                 }
 
-                // 2. Fail-safe: Extract from Download URL
-                // URL format: https://d.furaffinity.net/art/[ARTIST_NAME]/id/filename.ext
                 if artist == "unknown" {
                     if let Some(url) = &dl {
                         if let Some(start_idx) = url.find("/art/") {
-                            let rest = &url[start_idx + 5..]; // Skip "/art/"
+                            let rest = &url[start_idx + 5..];
                             if let Some(end_idx) = rest.find('/') {
                                 artist = rest[..end_idx].to_string();
                             }
@@ -274,7 +262,6 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
 
                 let clean_artist = artist.replace(" ", "_").to_lowercase();
 
-                // --- RATING EXTRACTION ---
                 let rating_selector = Selector::parse("div.rating span").unwrap();
                 let rating_text = view_doc.select(&rating_selector)
                     .next()
@@ -298,7 +285,7 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
                 }
             };
 
-            // 3. Download FA File (To Memory)
+            // 3. Download FA File
             let fa_bytes = match fa_client.get(&download_url).header("Cookie", &cookie_header).send().await {
                 Ok(r) => match r.bytes().await {
                     Ok(b) => b,
@@ -310,29 +297,33 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
             let digest = md5::compute(&fa_bytes);
             let hash_str = format!("{:x}", digest);
 
-            // 4. CHECK LOCAL MD5: Do we already have this file (from any source)?
+            // 4. CHECK LOCAL MD5
             if check_local_md5(&conn, &hash_str) {
                 let mut s = state.status.lock().unwrap();
                 s.skipped_md5 += 1;
-                // Optional: We could update the existing item to add the FA source URL here
                 continue; 
             }
 
-            // 5. CHECK E621: Does e621 have this MD5?
-            // Be polite to e621
+            // 5. CHECK E621
             tokio::time::sleep(Duration::from_millis(500)).await;
             
             if let Some(e621_post) = check_e621_md5(&e621_client, &hash_str).await {
                 // --- FOUND ON E621 (UPGRADE PATH) ---
                 
-                // We discard the FA bytes and download the e621 version (better trust chain)
+                // Double check ID to prevent unique constraint crash
+                if check_db_exists(&conn, "e621", &e621_post.id.to_string()) {
+                    let mut s = state.status.lock().unwrap();
+                    s.skipped_md5 += 1; // Mark as skipped
+                    continue; 
+                }
+
                 if let Some(file_url) = e621_post.file.url {
-                    let e621_bytes = match e621_client.get(&file_url).header("User-Agent", "LocalFavorites/0.1.0").send().await {
+                    let e621_bytes = match e621_client.get(&file_url).header("User-Agent", "TailBurrow/0.1.0").send().await {
                         Ok(r) => match r.bytes().await {
                             Ok(b) => b,
                             Err(_) => continue,
                         },
-                        Err(_) => continue, // Failed to get e621 file
+                        Err(_) => continue,
                     };
 
                     let ext = e621_post.file.ext.unwrap_or("jpg".to_string());
@@ -342,41 +333,31 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
                         let _ = file.write_all(&e621_bytes);
                     }
 
-                    // Save as e621 item
                     let now = chrono::Local::now().to_rfc3339();
                     let file_rel = format!("media/{}", filename);
                     let tx = conn.unchecked_transaction().unwrap();
 
-                    tx.execute(
+                    // PROTECTED INSERT
+                    let insert_res = tx.execute(
                         "INSERT INTO items (source, source_id, file_rel, file_md5, ext, rating, fav_count, score_total, created_at, added_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         params!["e621", e621_post.id.to_string(), file_rel, hash_str, ext, e621_post.rating, e621_post.fav_count, 0, e621_post.created_at, now],
-                    ).unwrap();
+                    );
+
+                    if insert_res.is_err() {
+                        println!("Skipping duplicate e621 insert: {}", e621_post.id);
+                        continue; // Skip if db constraint fails
+                    }
+
                     let item_id = tx.last_insert_rowid();
 
-                    // Add Tags (From e621)
+                    // Add Tags (Correctly Typed)
                     let insert_tags_with_type = |tags: Vec<String>, t_type: &str, tx: &rusqlite::Transaction| {
                         for tag in tags {
                             let clean = tag.trim().to_lowercase();
                             if clean.is_empty() { continue; }
-                            
-                            // Insert tag with specific type (artist, species, etc.)
-                            tx.execute(
-                                "INSERT OR IGNORE INTO tags (name, type) VALUES (?, ?)",
-                                params![&clean, t_type]
-                            ).unwrap();
-                            
-                            // Get ID
-                            let tag_id: i64 = tx.query_row(
-                                "SELECT tag_id FROM tags WHERE name = ?", 
-                                [&clean], 
-                                |r| r.get(0)
-                            ).unwrap();
-                            
-                            // Link
-                            tx.execute(
-                                "INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)", 
-                                [item_id, tag_id]
-                            ).unwrap();
+                            tx.execute("INSERT OR IGNORE INTO tags (name, type) VALUES (?, ?)", params![&clean, t_type]).unwrap();
+                            let tag_id: i64 = tx.query_row("SELECT tag_id FROM tags WHERE name = ?", [&clean], |r| r.get(0)).unwrap();
+                            tx.execute("INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)", [item_id, tag_id]).unwrap();
                         }
                     };
 
@@ -388,22 +369,25 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
                     insert_tags_with_type(e621_post.tags.meta, "meta", &tx);
                     insert_tags_with_type(e621_post.tags.lore, "lore", &tx);
 
-                    // Add Sources: e621 post URL + FA Source URL
+                    // Add Sources
                     let e621_src = format!("https://e621.net/posts/{}", e621_post.id);
-                    tx.execute("INSERT INTO sources (url) VALUES (?)", [&e621_src]).unwrap();
-                    let sid1 = tx.last_insert_rowid();
+                    tx.execute("INSERT OR IGNORE INTO sources (url) VALUES (?)", [&e621_src]).unwrap();
+                    let sid1: i64 = tx.query_row("SELECT source_row_id FROM sources WHERE url = ?", [&e621_src], |r| r.get(0)).unwrap();
                     tx.execute("INSERT INTO item_sources (item_id, source_row_id) VALUES (?, ?)", [item_id, sid1]).unwrap();
 
-                    // IMPORTANT: Add the FA URL as a source too, so we know we scanned it
-                    tx.execute("INSERT INTO sources (url) VALUES (?)", [&view_url]).unwrap();
-                    let sid2 = tx.last_insert_rowid();
+                    tx.execute("INSERT OR IGNORE INTO sources (url) VALUES (?)", [&view_url]).unwrap();
+                    let sid2: i64 = tx.query_row("SELECT source_row_id FROM sources WHERE url = ?", [&view_url], |r| r.get(0)).unwrap();
                     tx.execute("INSERT INTO item_sources (item_id, source_row_id) VALUES (?, ?)", [item_id, sid2]).unwrap();
 
                     tx.commit().unwrap();
 
                     let mut s = state.status.lock().unwrap();
                     s.upgraded += 1;
-                    continue; // Done with this item
+                    
+                    if stop_after > 0 && (s.imported + s.upgraded) >= stop_after {
+                        break; 
+                    }
+                    continue; 
                 }
             }
 
@@ -421,19 +405,24 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
             let tx = conn.unchecked_transaction().unwrap();
             let file_rel = format!("media/{}", filename);
 
-            tx.execute(
+            // PROTECTED INSERT
+            let insert_res = tx.execute(
                 "INSERT INTO items (source, source_id, file_rel, file_md5, ext, rating, created_at, added_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params!["furaffinity", id_str, file_rel, hash_str, ext, rating_char, now, now],
-            ).unwrap();
+            );
+
+            if insert_res.is_err() {
+                println!("Skipping duplicate FA insert: {}", id_str);
+                continue; 
+            }
 
             let item_id = tx.last_insert_rowid();
 
-            // Link Source
-            tx.execute("INSERT INTO sources (url) VALUES (?)", [&view_url]).unwrap();
-            let source_row_id = tx.last_insert_rowid();
+            tx.execute("INSERT OR IGNORE INTO sources (url) VALUES (?)", [&view_url]).unwrap();
+            let source_row_id: i64 = tx.query_row("SELECT source_row_id FROM sources WHERE url = ?", [&view_url], |r| r.get(0)).unwrap();
             tx.execute("INSERT INTO item_sources (item_id, source_row_id) VALUES (?, ?)", [item_id, source_row_id]).unwrap();
 
-            // Add Artist Tag
+            // Artist Tag
             {
                 let clean_artist = artist_name.trim().to_lowercase();
                 tx.execute("INSERT OR IGNORE INTO tags (name, type) VALUES (?, 'artist')", [&clean_artist]).unwrap();
@@ -441,7 +430,7 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
                 tx.execute("INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)", [item_id, tag_id]).unwrap();
             }
 
-            // Add General Tags
+            // General Tags
             for tag in fa_tags {
                 let clean = tag.trim().to_lowercase();
                 if clean.is_empty() { continue; }
@@ -455,19 +444,18 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
             let mut s = state.status.lock().unwrap();
             s.imported += 1;
 
-            if stop_after > 0 {
-                let s = state.status.lock().unwrap();
-                if (s.imported + s.upgraded) >= stop_after {
-                    break; // Break inner loop
-                }
+            if stop_after > 0 && (s.imported + s.upgraded) >= stop_after {
+                break; 
             }
         }
+
         if stop_after > 0 {
             let s = state.status.lock().unwrap();
             if (s.imported + s.upgraded) >= stop_after {
                 break; 
             }
         }
+
         page += 1;
         if page > 50 { break; } 
     }

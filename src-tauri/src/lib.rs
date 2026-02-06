@@ -47,6 +47,7 @@ pub fn run() {
       commands::restore_item,
       commands::empty_trash,
       commands::auto_clean_trash,
+      commands::fa_get_cred_info,
       commands::e621_clear_credentials,
       commands::e621_get_cred_info,
       commands::e621_set_credentials,

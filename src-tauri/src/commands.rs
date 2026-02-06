@@ -734,11 +734,30 @@ pub fn e621_favorite(app: AppHandle, post_id: i64) -> Result<Status, String> {
 
 #[tauri::command]
 pub fn fa_set_credentials(app: tauri::AppHandle, a: String, b: String) -> Result<(), String> {
-    // Save these to a json file in app_config_dir, similar to e621 creds
     let path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("fa_creds.json");
+    
+    // Ensure the config directory exists!
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+
     let json = serde_json::json!({ "a": a, "b": b });
-    std::fs::write(path, json.to_string()).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json.to_string()).map_err(|e| e.to_string())?;
+    
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct FaCredInfo {
+    pub has_creds: bool,
+}
+
+#[tauri::command]
+pub fn fa_get_cred_info(app: tauri::AppHandle) -> Result<FaCredInfo, String> {
+    let path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("fa_creds.json");
+    Ok(FaCredInfo { has_creds: path.exists() })
 }
 
 #[tauri::command]
