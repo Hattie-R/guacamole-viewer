@@ -4,7 +4,7 @@ import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
   Database, Loader2, Volume2, VolumeX, Clock, Pencil, 
-  RefreshCw, Info, Undo
+  RefreshCw, Info, Undo,LayoutGrid, Square
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
@@ -37,6 +37,7 @@ export default function FavoritesViewer() {
   const [fadeIn, setFadeIn] = useState(true);
   const [imageLoading, setImageLoading] = useState(true);
   const [imageCache, setImageCache] = useState<Record<string, boolean>>({});
+  const [viewMode, setViewMode] = useState<'grid' | 'single'>('grid');
 
   // Slideshow
   const [isSlideshow, setIsSlideshow] = useState(false);
@@ -100,7 +101,7 @@ export default function FavoritesViewer() {
   const [editingSources, setEditingSources] = useState<string[]>([]); // NEW
   const [editingRating, setEditingRating] = useState("s");            // NEW
   const [newSourceInput, setNewSourceInput] = useState("");           // NEW
-
+  const [trashCount, setTrashCount] = useState(0);
 
   // FurAffinity
   const [faCreds, setFaCreds] = useState<FACreds>({ a: '', b: '' });
@@ -330,28 +331,6 @@ export default function FavoritesViewer() {
     if (!currentItem) return; 
     await invoke("trash_item", { itemId: currentItem.item_id }); 
     await loadData(); };
-  const saveTags = async () => {
-    if (!currentItem) return;
-    
-    try {
-      await invoke("update_item_tags", { 
-        itemId: currentItem.item_id, 
-        tags: editingTags 
-      });
-
-      // Update local state immediately so UI reflects changes
-      setItems(prev => prev.map(item => 
-        item.item_id === currentItem.item_id 
-          ? { ...item, tags: editingTags } 
-          : item
-      ));
-
-      setShowTagModal(false);
-    } catch (error) {
-      console.error("Failed to update tags:", error);
-      alert("Failed to save tags: " + String(error));
-    }
-  };
 
   const startFaSync = async () => {
     // saving cookies
@@ -578,6 +557,11 @@ export default function FavoritesViewer() {
     return () => { if (t) clearInterval(t); };
   }, [showSettings]);
   
+  useEffect(() => {
+    if (showSettings) {
+      invoke<number>("get_trash_count").then(setTrashCount);
+    }
+  }, [showSettings]);
     // Global keyboard navigation & shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -777,6 +761,22 @@ export default function FavoritesViewer() {
                   <option value="furaffinity">FurAffinity Only</option>
                 </select>
                 <div className="text-gray-400 text-sm">Showing {filteredItems.length} <span className="mx-1">•</span> Loaded {items.length} <span className="mx-1">•</span> Total {totalDatabaseItems}</div>
+                <div className="flex bg-gray-800 rounded p-1 ml-auto border border-gray-700">
+                  <button 
+                    onClick={() => setViewMode('grid')}
+                    className={`p-1.5 rounded transition-colors ${viewMode === 'grid' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                    title="Grid View"
+                  >
+                    <LayoutGrid className="w-4 h-4" />
+                  </button>
+                  <button 
+                    onClick={() => setViewMode('single')}
+                    className={`p-1.5 rounded transition-colors ${viewMode === 'single' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                    title="Single View"
+                  >
+                    <Square className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
               {selectedTags.length > 0 && (
                 <div className="mt-3 flex gap-2 flex-wrap">
@@ -789,6 +789,72 @@ export default function FavoritesViewer() {
             <div className="max-w-7xl mx-auto p-12 flex items-center justify-center"><Loader2 className="w-10 h-10 animate-spin text-purple-500" /><span className="ml-3 text-gray-400">Loading library...</span></div>
           ) : filteredItems.length > 0 ? (
             <div className="max-w-7xl mx-auto p-4">
+              {viewMode === 'grid' ? (
+              <>
+                <Masonry
+                  breakpointCols={{ default: 5, 1536: 5, 1280: 4, 1024: 3, 768: 2, 500: 1 }}
+                  className="flex w-auto gap-3"
+                  columnClassName="flex flex-col gap-3"
+                >
+                  {items.map((item, index) => {
+                    const isVid = ["mp4", "webm"].includes((item.ext||"").toLowerCase());
+                    return (
+                      <div 
+                        key={item.item_id} 
+                        onClick={() => {
+                          setCurrentIndex(index);
+                          setViewMode('single');
+                          setViewerOverlay(true); 
+                        }}
+                        className="relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-purple-500 transition-all"
+                      >
+                        {isVid ? (
+                          <div className="relative">
+                            {/* Muted video preview */}
+                            <video src={item.url} className="w-full h-auto object-cover" muted loop onMouseOver={e => e.currentTarget.play()} onMouseOut={e => e.currentTarget.pause()} />
+                            <div className="absolute top-2 right-2 bg-black/50 p-1 rounded-full"><Play className="w-3 h-3 text-white" /></div>
+                          </div>
+                        ) : (
+                          <img src={item.url} className="w-full h-auto object-cover" loading="lazy" />
+                        )}
+                        
+                        {/* Overlay Info */}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3 pointer-events-none">
+                          
+                          {/* Artist Line */}
+                          <div className="flex items-center gap-1.5 mb-1">
+                            {/* Source Icon Badge */}
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${item.source === 'e621' ? 'bg-blue-600' : 'bg-orange-600'}`}>
+                              {item.source === 'e621' ? 'E6' : 'FA'}
+                            </span>
+                            
+                            {/* Artist Name */}
+                            <span className="text-white text-sm font-medium truncate">
+                              {(item.artist && item.artist.length > 0) ? item.artist.join(", ") : "Unknown"}
+                            </span>
+                          </div>
+
+                          {/* Stats Line */}
+                          <div className="flex justify-between items-center text-xs text-gray-300 border-t border-white/20 pt-1">
+                            <div className="flex gap-2">
+                              <span>⭐ {item.fav_count || 0}</span>
+                              {/* <span>↗ {item.score?.total || 0}</span> */}
+                            </div>
+                            <span className={`font-bold uppercase ${item.rating==='e'?'text-red-400':item.rating==='q'?'text-yellow-400':'text-green-400'}`}>
+                              {item.rating || 'S'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </Masonry>
+                {/* Load More for Grid */}
+                {hasMoreItems && (
+                  <InfiniteSentinel onVisible={loadMoreItems} disabled={isLoadingMore} />
+                )}
+              </>
+            ) : (
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                 <div className="lg:col-span-3">
                   <div className={viewerOverlay ? "fixed inset-0 z-50 bg-black" : "bg-gray-800 rounded-lg overflow-hidden"} onMouseMove={() => viewerOverlay && pokeHud()} onMouseDown={() => viewerOverlay && pokeHud()} onWheel={() => viewerOverlay && pokeHud()} onTouchStart={() => viewerOverlay && pokeHud()}>
@@ -926,48 +992,49 @@ export default function FavoritesViewer() {
                   </div>
                 </div>
               </div>
+              )}
             </div>
           ) : (
-  <div className="text-center py-20 text-gray-400">
-    {!libraryRoot ? (
-      // STATE 1: First Run / No Library
-      <div className="animate-in fade-in zoom-in duration-300">
-        <Database className="w-20 h-20 mx-auto mb-6 text-purple-500 opacity-80" />
-        <h2 className="text-3xl font-bold text-white mb-3">Welcome!</h2>
-        <p className="text-gray-400 mb-8 max-w-md mx-auto">
-          To get started, select a folder where your favorites will be stored.
-          <br />
-          <span className="text-sm opacity-75">(You can create a new empty folder or select an existing one)</span>
-        </p>
-        <button
-          onClick={changeLibraryRoot}
-          className="px-8 py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-purple-500/20 transition-all transform hover:-translate-y-1"
-        >
-          Select Library Folder
-        </button>
-      </div>
-    ) : (
-      // STATE 2: Library Selected but Empty
-      <div>
-        <Upload className="w-16 h-16 mx-auto mb-4 opacity-50" />
-        <p className="text-xl font-semibold text-gray-200">Library is Ready</p>
-        <p className="text-sm mt-2 mb-6 text-gray-400">
-          Your database is set up at:
-          <br />
-          <span className="font-mono text-xs bg-gray-800 px-2 py-1 rounded mt-1 inline-block">{libraryRoot}</span>
-        </p>
-        <div className="p-4 bg-gray-800 rounded-lg max-w-md mx-auto border border-gray-700">
-          <p className="text-sm mb-3">Go to <b>Settings → e621</b> to log in and sync your favorites.</p>
-          <button 
-            onClick={() => setShowSettings(true)}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
-          >
-            Open Settings
-          </button>
-        </div>
-      </div>
-    )}
-  </div>
+            <div className="text-center py-20 text-gray-400">
+              {!libraryRoot ? (
+                // STATE 1: First Run / No Library
+                <div className="animate-in fade-in zoom-in duration-300">
+                  <Database className="w-20 h-20 mx-auto mb-6 text-purple-500 opacity-80" />
+                  <h2 className="text-3xl font-bold text-white mb-3">Welcome!</h2>
+                  <p className="text-gray-400 mb-8 max-w-md mx-auto">
+                    To get started, select a folder where your favorites will be stored.
+                    <br />
+                    <span className="text-sm opacity-75">(You can create a new empty folder or select an existing one)</span>
+                  </p>
+                  <button
+                    onClick={changeLibraryRoot}
+                    className="px-8 py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-purple-500/20 transition-all transform hover:-translate-y-1"
+                  >
+                    Select Library Folder
+                  </button>
+                </div>
+              ) : (
+                // STATE 2: Library Selected but Empty
+                <div>
+                  <Upload className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                  <p className="text-xl font-semibold text-gray-200">Library is Ready</p>
+                  <p className="text-sm mt-2 mb-6 text-gray-400">
+                    Your database is set up at:
+                    <br />
+                    <span className="font-mono text-xs bg-gray-800 px-2 py-1 rounded mt-1 inline-block">{libraryRoot}</span>
+                  </p>
+                  <div className="p-4 bg-gray-800 rounded-lg max-w-md mx-auto border border-gray-700">
+                    <p className="text-sm mb-3">Go to <b>Settings → e621</b> to log in and sync your favorites.</p>
+                    <button 
+                      onClick={() => setShowSettings(true)}
+                      className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
+                    >
+                      Open Settings
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </>
       )}
@@ -1061,12 +1128,13 @@ export default function FavoritesViewer() {
             <div className="overflow-y-auto p-5 space-y-4">
               <div><h3 className="text-lg font-semibold mb-2">Library</h3>
                 <div className="text-sm text-gray-400 mb-1">Library folder</div><div className="text-xs text-gray-200 break-all bg-gray-900 border border-gray-700 rounded p-2">{libraryRoot || "(not set)"}</div>
-                <div className="flex gap-2 mt-3"><button onClick={changeLibraryRoot} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded">Change/Create Library</button><button 
+                <div className="flex gap-2 mt-3"><button onClick={changeLibraryRoot} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded">Change/Create Library</button>
+                <button 
                   onClick={() => { setShowSettings(false); loadTrash(); }} 
                   className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded flex items-center gap-2"
                 >
                   <Trash2 className="w-4 h-4" />
-                  Trash ({totalDatabaseItems - items.length > 0 ? "?" : "Manager"})
+                  Trash ({trashCount})
                 </button>
                 <button onClick={async () => { const ok = await confirmDialog("Unload the current library?", { title: "Unload Library", okLabel: "Yes, unload", cancelLabel: "Cancel" }); if (!ok) return; try { await invoke("clear_library_root"); setLibraryRoot(""); setItems([]); setAllTags([]); setTotalDatabaseItems(0); setHasMoreItems(true); setDownloadedE621Ids(new Set()); setShowSettings(false); } catch (e) { console.error("Failed to unload:", e); alert("Failed to unload: " + String(e)); } }} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded">Unload Library</button></div>
               </div>
@@ -1529,5 +1597,5 @@ function InfiniteSentinel({ onVisible, disabled }: { onVisible: () => void; disa
     obs.observe(el);
     return () => obs.disconnect();
   }, [onVisible, disabled]);
-  return <div ref={ref} className="h-10" />;
+  return <div ref={ref} className="h-10 w-full" />;
 }

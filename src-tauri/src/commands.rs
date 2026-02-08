@@ -9,6 +9,7 @@ use tauri::Manager;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use crate::fa::{FAState, FASyncStatus};
+use std::io::Cursor;
 
 
 pub fn get_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -782,6 +783,18 @@ pub fn fa_start_sync(app: tauri::AppHandle, limit: Option<u32>) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn get_trash_count(app: tauri::AppHandle) -> Result<u32, String> {
+    let root = get_root(&app)?;
+    let conn = db::open(&library::db_path(&root))?;
+    let count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM items WHERE trashed_at IS NOT NULL",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    Ok(count)
+}
+
+#[tauri::command]
 pub fn get_trashed_items(app: tauri::AppHandle) -> Result<Vec<ItemDto>, String> {
     let root = get_root(&app)?;
     let conn = db::open(&library::db_path(&root))?;
@@ -1202,6 +1215,90 @@ pub fn list_items(
         out.push(row.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+#[tauri::command]
+pub fn get_thumbnail(app: tauri::AppHandle, file_rel: String) -> Result<Vec<u8>, String> {
+    let root = get_root(&app)?;
+    let path = root.join(&file_rel);
+    
+    // Check cache first? (Optional optimization: save thumbs to disk)
+    // For now, let's generate on fly (might be slow) or just return the file if it's small.
+    
+    // BETTER STRATEGY:
+    // Only generate if we don't have it. Save it to `library/.cache/thumbs/`
+    
+    let cache_dir = root.join(".cache").join("thumbs");
+    if !cache_dir.exists() {
+        std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    }
+    
+    // Hash path to get unique filename
+    let name_hash = format!("{:x}", md5::compute(file_rel.as_bytes()));
+    let thumb_path = cache_dir.join(format!("{}.jpg", name_hash));
+    
+    if thumb_path.exists() {
+        return std::fs::read(thumb_path).map_err(|e| e.to_string());
+    }
+    
+    // Generate
+    if path.extension().unwrap_or_default() == "mp4" || path.extension().unwrap_or_default() == "webm" {
+        // Video thumbnailing is hard without ffmpeg. Return empty or placeholder?
+        // For now, let's just error so frontend shows default icon
+        return Err("Video thumbnail not supported yet".into());
+    }
+
+    let img = image::open(&path).map_err(|e| e.to_string())?;
+    let thumb = img.thumbnail(300, 300); // 300px max width/height
+    
+    let mut bytes: Vec<u8> = Vec::new();
+    thumb.write_to(&mut Cursor::new(&mut bytes), image::ImageOutputFormat::Jpeg(80))
+        .map_err(|e| e.to_string())?;
+        
+    // Save to cache
+    std::fs::write(&thumb_path, &bytes).map_err(|e| e.to_string())?;
+    
+    Ok(bytes)
+}
+
+#[tauri::command]
+pub fn ensure_thumbnail(app: tauri::AppHandle, file_rel: String) -> Result<String, String> {
+    let root = get_root(&app)?;
+    let path = root.join(&file_rel);
+    let cache_dir = root.join(".cache").join("thumbs");
+    
+    if !cache_dir.exists() {
+        std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let name_hash = format!("{:x}", md5::compute(file_rel.as_bytes()));
+    let thumb_filename = format!("{}.jpg", name_hash);
+    let thumb_path = cache_dir.join(&thumb_filename);
+    
+    // Return relative path if exists
+    if thumb_path.exists() {
+        return Ok(format!(".cache/thumbs/{}", thumb_filename));
+    }
+    
+    // If video, skip generation for now
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    if ext == "mp4" || ext == "webm" || ext == "gif" {
+        // For GIFs/Videos, we might just return the original file if we can't thumb it easily
+        // Or return empty string to signal "use placeholder"
+        return Ok("".to_string());
+    }
+
+    // Generate
+    let img = image::open(&path).map_err(|e| format!("Failed to open image: {}", e))?;
+    let thumb = img.thumbnail(250, 250); // Small grid size
+    
+    let mut bytes: Vec<u8> = Vec::new();
+    thumb.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageOutputFormat::Jpeg(70))
+        .map_err(|e| e.to_string())?;
+        
+    std::fs::write(&thumb_path, &bytes).map_err(|e| e.to_string())?;
+    
+    Ok(format!(".cache/thumbs/{}", thumb_filename))
 }
 
 fn upsert_tag(conn: &Connection, name: &str, tag_type: &str) -> Result<i64, String> {
