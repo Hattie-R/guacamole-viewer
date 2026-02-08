@@ -277,7 +277,7 @@ pub fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status, Stri
   }
 
   // temp download
-  let tmp_dir = root.join("cache").join("tmp");
+  let tmp_dir = root.join(".cache").join("tmp");
   fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
   let tmp_path = tmp_dir.join(format!("{filename}.part"));
 
@@ -863,7 +863,6 @@ pub fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
     let root = get_root(&app)?;
     let conn = db::open(&library::db_path(&root))?;
 
-    // 1. Get all files to delete
     let mut stmt = conn.prepare("SELECT file_rel FROM items WHERE trashed_at IS NOT NULL")
         .map_err(|e| e.to_string())?;
     
@@ -872,17 +871,26 @@ pub fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
         .filter_map(Result::ok)
         .collect();
 
+    let cache_dir = root.join(".cache").join("thumbs");
+
     // 2. Delete from Disk
     for rel_path in files_to_delete {
-        let abs_path = root.join(rel_path);
+        // Delete Main File
+        let abs_path = root.join(&rel_path);
         if abs_path.exists() {
-            let _ = std::fs::remove_file(abs_path); // Ignore errors if file missing
+            let _ = std::fs::remove_file(abs_path);
+        }
+
+        // Delete Thumbnail
+        // Hash the relative path just like ensure_thumbnail does
+        let name_hash = format!("{:x}", md5::compute(rel_path.as_bytes()));
+        let thumb_path = cache_dir.join(format!("{}.jpg", name_hash));
+        
+        if thumb_path.exists() {
+            let _ = std::fs::remove_file(thumb_path);
         }
     }
 
-    // 3. Delete from DB (Cascades should handle tags/sources if set up, but let's be clean)
-    // Note: If you don't have ON DELETE CASCADE in your schema, you might leave orphan tags.
-    // For simplicity, we just delete the item row here.
     conn.execute("DELETE FROM items WHERE trashed_at IS NOT NULL", [])
         .map_err(|e| e.to_string())?;
 

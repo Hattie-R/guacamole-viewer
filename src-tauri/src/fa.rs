@@ -97,7 +97,7 @@ fn check_local_md5(conn: &Connection, hash: &str) -> bool {
 
 async fn check_e621_md5(client: &reqwest::Client, hash: &str) -> Option<E621Post> {
     let url = format!("https://e621.net/posts.json?tags=md5:{}", hash);
-    match client.get(&url).header("User-Agent", "TailBurrow/0.1.0").send().await {
+    match client.get(&url).header("User-Agent", "TailBurrow/0.2.1").send().await {
         Ok(resp) => {
             if let Ok(json) = resp.json::<E621Response>().await {
                 return json.posts.into_iter().next();
@@ -318,7 +318,7 @@ pub async fn run_sync(app: AppHandle, cookie_a: String, cookie_b: String, stop_a
                 }
 
                 if let Some(file_url) = e621_post.file.url {
-                    let e621_bytes = match e621_client.get(&file_url).header("User-Agent", "TailBurrow/0.1.0").send().await {
+                    let e621_bytes = match e621_client.get(&file_url).header("User-Agent", "TailBurrow/0.2.1").send().await {
                         Ok(r) => match r.bytes().await {
                             Ok(b) => b,
                             Err(_) => continue,

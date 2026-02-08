@@ -48,9 +48,8 @@ TailBurrow uses a **"Hybrid Upgrade"** strategy to ensure the best possible meta
     *   **Match Found:** The app **"upgrades"** the import. It downloads the file from e621 instead (often higher quality) and applies rich tags, ratings, and source links.
     *   **No Match:** The image is preserved as a **FurAffinity Exclusive**, with the artist name and rating scraped directly from the submission page.
 
-## 🗺️ Roadmap
+## 🗺️ To Do List
 
-*   **Performance:** Switch library view to a virtualized masonry grid with cached thumbnails for massive collections.
 *   **More Sources:** Support for Twitter/X and Bluesky archiving.
 
 ## 📄 License
