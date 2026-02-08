@@ -32,4 +32,4 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 scraper = "0.19"
 md5 = "0.7"
 tokio = { version = "1", features = ["time"] }
-image = "0.24"
+image = { version = "0.24", features = ["default", "webp"] }

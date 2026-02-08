@@ -13,8 +13,8 @@ import Masonry from "react-masonry-css";
 
 // --- TYPE DEFINITIONS ---
 type AppConfig = { library_root?: string | null };
-type ItemDto = { item_id: number; source: string; source_id: string; remote_url?: string | null; file_abs: string; ext?: string | null; tags: string[]; artists: string[]; sources: string[]; rating?: string | null; fav_count?: number | null; score_total?: number | null; timestamp?: string | null; added_at: string; };
-type LibraryItem = { id?: number; item_id: number; source: string; source_id: string; remote_url?: string | null; url: string; ext?: string | null; tags: string[]; artist: string[]; sources: string[]; rating?: string | null; fav_count?: number | null; score?: { total: number }; timestamp?: string | null; };
+type ItemDto = { item_id: number; source: string; source_id: string; remote_url?: string | null; file_abs: string; file_rel: string; ext?: string | null; tags: string[]; artists: string[]; sources: string[]; rating?: string | null; fav_count?: number | null; score_total?: number | null; timestamp?: string | null; added_at: string; };
+type LibraryItem = { id?: number; item_id: number; source: string; source_id: string; remote_url?: string | null; url: string; ext?: string | null; tags: string[]; artist: string[]; sources: string[]; rating?: string | null; fav_count?: number | null; score?: { total: number }; timestamp?: string | null; file_rel: string; };
 type SyncStatus = { running: boolean; cancelled: boolean; max_new_downloads?: number | null; scanned_pages: number; scanned_posts: number; skipped_existing: number; new_attempted: number; downloaded_ok: number; failed_downloads: number; unavailable: number; last_error?: string | null; };
 type UnavailableDto = { source: string; source_id: string; seen_at: string; reason: string; sources: string[]; };
 type Feed = { id: number; name: string; query: string };
@@ -144,6 +144,7 @@ export default function FavoritesViewer() {
       const mapped = rows.map((r): LibraryItem => ({
         ...r,
         url: convertFileSrc(r.file_abs),
+        file_rel: r.file_rel, 
         id: Number(r.source_id),
         artist: r.artists || [],
         tags: r.tags || [],
@@ -375,7 +376,7 @@ export default function FavoritesViewer() {
     const [coords, setCoords] = useState<{ x: number; y: number } | null>(null);
     const iconRef = useRef<HTMLDivElement>(null);
     const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+    
     // --- HANDLERS ---
 
     const handleEnter = () => {
@@ -443,6 +444,7 @@ export default function FavoritesViewer() {
     const mapped = rows.map((r): LibraryItem => ({
       ...r,
       url: convertFileSrc(r.file_abs),
+      file_rel: r.file_rel, 
       id: Number(r.source_id),
       artist: [],
       tags: [],
@@ -815,9 +817,8 @@ export default function FavoritesViewer() {
                             <div className="absolute top-2 right-2 bg-black/50 p-1 rounded-full"><Play className="w-3 h-3 text-white" /></div>
                           </div>
                         ) : (
-                          <img src={item.url} className="w-full h-auto object-cover" loading="lazy" />
+                          <Thumbnail item={item} className="w-full h-auto object-cover" />
                         )}
-                        
                         {/* Overlay Info */}
                         <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3 pointer-events-none">
                           
@@ -1586,6 +1587,42 @@ export default function FavoritesViewer() {
     </div>
   );
 }
+
+const Thumbnail = ({ item, className }: { item: LibraryItem, className?: string }) => {
+  const [src, setSrc] = useState<string>("");
+
+  useEffect(() => {
+    let active = true;
+    
+    // Fallback immediately for videos/gifs to avoid backend call overhead
+    const ext = (item.ext || "").toLowerCase();
+    if (["mp4", "webm", "gif"].includes(ext)) {
+      setSrc(item.url);
+      return;
+    }
+
+    const fetchThumb = async () => {
+      try {
+        const thumbPath = await invoke<string>("ensure_thumbnail", { fileRel: item.file_rel });
+        if (active) {
+          if (thumbPath) {
+             setSrc(convertFileSrc(thumbPath));
+          } else {
+             // Backend returned empty (e.g. video or error handled gracefully)
+             setSrc(item.url);
+          }
+        }
+      } catch (e) {
+        if (active) setSrc(item.url);
+      }
+    };
+    fetchThumb();
+    return () => { active = false; };
+  }, [item]);
+
+  if (!src) return <div className={`bg-gray-800 animate-pulse ${className}`} />;
+  return <img src={src} className={className} loading="lazy" alt="" />;
+};
 
 function InfiniteSentinel({ onVisible, disabled }: { onVisible: () => void; disabled?: boolean; }) {
   const ref = useRef<HTMLDivElement | null>(null);

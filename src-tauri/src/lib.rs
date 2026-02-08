@@ -4,7 +4,7 @@ mod db;
 mod library;
 pub mod fa; 
 
-use tauri::Manager; // ✅ required for fs_scope & asset_protocol_scope
+use tauri::Manager; 
 use tauri_plugin_fs::FsExt;
 use std::sync::{Arc, Mutex};
 
@@ -51,6 +51,7 @@ pub fn run() {
       commands::update_item_rating,
       commands::update_item_sources,
       commands::get_trash_count,
+      commands::ensure_thumbnail,
       commands::e621_clear_credentials,
       commands::e621_get_cred_info,
       commands::e621_set_credentials,
